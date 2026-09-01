@@ -79,6 +79,61 @@ test('findCustomerByEmail returns null when Stripe has no match', async () => {
   }
 });
 
+test('findCustomerByEmail retries lowercased when the typed casing finds nothing', async () => {
+  const searched = [];
+  globalThis.fetch = async (url) => {
+    const email = new URL(url).searchParams.get('email');
+    searched.push(email);
+    const data = email === 'person@example.com' ? [{ id: 'cus_1', email: 'person@example.com' }] : [];
+    return new Response(JSON.stringify({ data }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const customer = await findCustomerByEmail(ENV, 'Person@Example.com');
+    assert.equal(customer.id, 'cus_1');
+    assert.deepEqual(searched, ['Person@Example.com', 'person@example.com']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('findCustomerByEmail does not make a second request when the typed casing matches', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ data: [{ id: 'cus_1', email: 'person@example.com' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    await findCustomerByEmail(ENV, 'person@example.com');
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('findCustomerByEmail returns null without calling Stripe for a blank email', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    assert.equal(await findCustomerByEmail(ENV, '   '), null);
+    assert.equal(await findCustomerByEmail(ENV, ''), null);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('shapeSubscription trims a Stripe subscription to the fields the UI needs', () => {
   const shaped = shapeSubscription({
     id: 'sub_1',

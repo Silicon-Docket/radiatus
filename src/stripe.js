@@ -49,9 +49,29 @@ async function stripeRequestOrNullOn404(env, path, params) {
   }
 }
 
+/**
+ * Stripe's email filter is exact and case-sensitive, so searching
+ * "John@Example.com" does not find a customer stored as "john@example.com".
+ * Try what the operator typed, then the lowercased form, which covers the
+ * common case of a mixed-case search against a lowercase-stored address.
+ *
+ * Not covered: an address stored mixed-case and searched lowercase. Finding
+ * that needs Stripe's Search API, which lags the live data by up to a minute
+ * and so is a poor fit for looking up a customer who just signed up.
+ */
 export async function findCustomerByEmail(env, email) {
-  const result = await stripeRequest(env, '/customers', { email, limit: 1 });
-  return result.data[0] || null;
+  const typed = (email || '').trim();
+  if (!typed) return null;
+
+  const candidates = [typed];
+  const lowercased = typed.toLowerCase();
+  if (lowercased !== typed) candidates.push(lowercased);
+
+  for (const candidate of candidates) {
+    const result = await stripeRequest(env, '/customers', { email: candidate, limit: 1 });
+    if (result.data[0]) return result.data[0];
+  }
+  return null;
 }
 
 export async function getCustomer(env, customerId) {
