@@ -22,7 +22,7 @@
     "template"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "private": true
 }
