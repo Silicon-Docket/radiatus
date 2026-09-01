@@ -8,12 +8,13 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply radiatus --local",
     "db:migrate:remote": "wrangler d1 migrations apply radiatus --remote",
-    "lint": "node --check src/worker.js && node --check test/worker.test.js",
+    "lint": "oxlint --deny-warnings src test db drizzle.config.js",
     "test": "node --test"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.10",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "oxlint": "^1.80.0"
   },
   "repository": {
     "type": "git",
