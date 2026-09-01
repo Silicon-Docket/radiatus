@@ -28,12 +28,12 @@
 
 ---
 
-Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** above (or **Use this template** to clone it first) and you have a working admin dashboard for records tied to Stripe customers and subscriptions on your own Cloudflare account &mdash; no server to run, no separate database to provision. After the button provisions your D1 database, you still need to run the migration once &mdash; see [Quick start](#quick-start). If you're setting this up with an AI coding agent, point it at [AGENTS.md](./AGENTS.md) for the exact step-by-step it should follow.
+Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** above (or **Use this template** to clone it first) and you have a working CRM for looking up Stripe customers and their subscriptions on your own Cloudflare account &mdash; no server to run, no separate database to provision. After the button provisions your D1 database, you still need to run the migration once &mdash; see [Quick start](#quick-start). If you're setting this up with an AI coding agent, point it at [AGENTS.md](./AGENTS.md) for the exact step-by-step it should follow.
 
 ## Key features
 
 - **Search-first troubleshooting**: look up a customer by email, or a Stripe customer/subscription ID, and see their live status, billing period, payment method, and recent invoices — not just what's stored locally.
-- **Notes on top of live data**: attach internal notes/flags to a customer or subscription, layered on top of the real Stripe record instead of replacing it.
+- **Notes on top of live data**: attach internal notes/flags to a customer's subscription, layered on top of the real Stripe record instead of replacing it.
 - **Zero servers**: runs entirely on Cloudflare Workers + D1 — nothing to provision, patch, or scale by hand.
 - **Token-gated API**: every `/api/*` route (including the Stripe lookup) requires an `Authorization: Token <token>` secret; nothing is open by default.
 - **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 migrations apply` runs migrations.
