@@ -239,6 +239,22 @@ test('/api/mail/lookup requires q', async () => {
   assert.equal((await worker.fetch(mailRequest('   '), GRAPH_ENV)).status, 400);
 });
 
+test('/api/mail/lookup rejects an oversized q before it reaches Graph', async () => {
+  let graphCalls = 0;
+  const originalFetch = globalThis.fetch;
+  stubGraphFetch(() => {
+    graphCalls += 1;
+    return graphJson({ value: [] });
+  });
+  try {
+    const response = await worker.fetch(mailRequest('a'.repeat(400) + '@example.com'), GRAPH_ENV);
+    assert.equal(response.status, 400);
+    assert.equal(graphCalls, 0, 'an oversized q must not reach Graph, where it returns a 400 that reads as a mailbox capability finding');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('/api/mail/lookup returns 501 when GRAPH_MAILBOX is unset', async () => {
   const response = await worker.fetch(mailRequest(), { ...GRAPH_ENV, GRAPH_MAILBOX: undefined });
   assert.equal(response.status, 501);

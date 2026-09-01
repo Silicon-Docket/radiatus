@@ -1,7 +1,7 @@
 # Office 365 correspondence panel (optional)
 
 This is an **optional** feature. Radiatus runs fine without it: leave the four
-`GRAPH_*` variables blank and `/api/mail/lookup` answers `501 Not Configured`,
+`GRAPH_*` variables blank and `/api/mail/lookup` answers `501 Not Implemented`,
 which the admin page renders as a plain "not configured" note. Nothing else in
 the template changes. It is deliberately kept out of [Quick start](../README.md#quick-start).
 

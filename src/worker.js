@@ -217,10 +217,14 @@ export const ADMIN_HTML = `<!doctype html>
           if (data.messages.length === 0) {
             mailStatus.textContent = 'No messages found for ' + address + '.';
           } else if (data.mode === 'sender-only') {
+            // Say what happened, not why. Graph rejects the participant search
+            // with a 400 for several reasons and only one of them is "the grant
+            // forbids it" — asserting the permissions story would send an
+            // operator off to redo their Exchange RBAC over a malformed query.
             mailStatus.textContent =
               'Showing ' + data.messages.length + ' message(s) sent BY ' + address +
-              '. This mailbox does not allow searching all participants, so replies sent to ' +
-              address + ' are not listed.';
+              '. Graph rejected the participant search for this mailbox, so replies sent to ' +
+              address + ' are not listed. If this persists, see docs/office365-mail-setup.md.';
           } else {
             // Graph returns $search results by relevance and refuses $orderby
             // alongside $search, so say so — a date column otherwise reads as
@@ -605,6 +609,12 @@ export default {
       const q = (url.searchParams.get('q') || '').trim();
       if (!q) {
         return json({ error: 'q is required' }, 400);
+      }
+      // Bounded like the /api/entries handler. Without this an oversized q
+      // reaches Graph, comes back 400, and the panel reports it as a mailbox
+      // capability finding — the operator then debugs the wrong thing.
+      if (q.length > 320) {
+        return json({ error: 'q is too long' }, 400);
       }
       // Optional feature: an unconfigured template says so rather than 500ing.
       if (!isGraphConfigured(env)) {
