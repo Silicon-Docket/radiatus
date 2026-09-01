@@ -5,10 +5,15 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 execute radiatus --local --file=./migrations/0001_init.sql",
-    "db:migrate:remote": "wrangler d1 execute radiatus --remote --file=./migrations/0001_init.sql",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply radiatus --local",
+    "db:migrate:remote": "wrangler d1 migrations apply radiatus --remote",
     "lint": "node --check src/worker.js && node --check test/worker.test.js",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2"
   },
   "repository": {
     "type": "git",
