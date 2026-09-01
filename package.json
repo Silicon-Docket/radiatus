@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "http://localhost:26831/Silicon-Docket/radiatus"
+    "url": "https://github.com/Silicon-Docket/radiatus.git"
   },
   "keywords": [
     "cloudflare",

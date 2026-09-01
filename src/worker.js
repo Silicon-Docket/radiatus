@@ -120,29 +120,37 @@ export const ADMIN_HTML = `<!doctype html>
         deleteButton.textContent = 'Delete';
 
         saveButton.onclick = async () => {
-          const updateResponse = await fetch('/api/entries/' + entry.id, {
-            method: 'PUT',
-            headers: authHeaders(),
-            body: JSON.stringify({ entryKey: keyInput.value, entryValue: valueArea.value }),
-          });
-          const updateData = await updateResponse.json();
-          if (!updateResponse.ok) {
-            throw new Error(updateData.error || 'Failed to update entry');
+          try {
+            const updateResponse = await fetch('/api/entries/' + entry.id, {
+              method: 'PUT',
+              headers: authHeaders(),
+              body: JSON.stringify({ entryKey: keyInput.value, entryValue: valueArea.value }),
+            });
+            const updateData = await updateResponse.json();
+            if (!updateResponse.ok) {
+              throw new Error(updateData.error || 'Failed to update entry');
+            }
+            setStatus('Updated entry ' + entry.id);
+          } catch (error) {
+            setError(error.message);
           }
-          setStatus('Updated entry ' + entry.id);
         };
 
         deleteButton.onclick = async () => {
-          const deleteResponse = await fetch('/api/entries/' + entry.id, {
-            method: 'DELETE',
-            headers: authHeaders(),
-          });
-          const deleteData = await deleteResponse.json();
-          if (!deleteResponse.ok) {
-            throw new Error(deleteData.error || 'Failed to delete entry');
+          try {
+            const deleteResponse = await fetch('/api/entries/' + entry.id, {
+              method: 'DELETE',
+              headers: authHeaders(),
+            });
+            const deleteData = await deleteResponse.json();
+            if (!deleteResponse.ok) {
+              throw new Error(deleteData.error || 'Failed to delete entry');
+            }
+            tr.remove();
+            setStatus('Deleted entry ' + entry.id);
+          } catch (error) {
+            setError(error.message);
           }
-          tr.remove();
-          setStatus('Deleted entry ' + entry.id);
         };
 
         actionsCell.appendChild(saveButton);
@@ -178,28 +186,32 @@ export const ADMIN_HTML = `<!doctype html>
       }
 
       form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const payload = {
-          stripeCustomerId: document.getElementById('customer-id').value,
-          stripeSubscriptionId: document.getElementById('subscription-id').value,
-          entryKey: document.getElementById('entry-key').value,
-          entryValue: document.getElementById('entry-value').value,
-        };
+        try {
+          event.preventDefault();
+          const payload = {
+            stripeCustomerId: document.getElementById('customer-id').value,
+            stripeSubscriptionId: document.getElementById('subscription-id').value,
+            entryKey: document.getElementById('entry-key').value,
+            entryValue: document.getElementById('entry-value').value,
+          };
 
-        const response = await fetch('/api/entries', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify(payload),
-        });
-        const data = await response.json();
+          const response = await fetch('/api/entries', {
+            method: 'POST',
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
 
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to create entry');
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to create entry');
+          }
+
+          setStatus('Created entry ' + data.entry.id);
+          form.reset();
+          await loadEntries();
+        } catch (error) {
+          setError(error.message);
         }
-
-        setStatus('Created entry ' + data.entry.id);
-        form.reset();
-        await loadEntries();
       });
 
       document.getElementById('load').addEventListener('click', async () => {

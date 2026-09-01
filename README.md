@@ -26,7 +26,7 @@ A Cloudflare Worker + D1 template for building an admin dashboard that manages d
    npx wrangler d1 create radiatus
    ```
 
-3. Replace `database_id` in `/home/runner/work/radiatus/radiatus/wrangler.toml` with the value from step 2.
+3. Replace `database_id` in `wrangler.toml` with the value from step 2.
 
 4. Add an admin token secret:
 
