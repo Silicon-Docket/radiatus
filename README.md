@@ -18,13 +18,17 @@
   <a href="https://developers.cloudflare.com/d1/"><img src="https://img.shields.io/badge/storage-D1-F38020.svg" alt="Cloudflare D1"></a>
 </p>
 
+<p align="center">
+  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/Silicon-Docket/radiatus"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare Workers"></a>
+</p>
+
 ---
 
 **Source code**: [github.com/Silicon-Docket/radiatus](https://github.com/Silicon-Docket/radiatus)
 
 ---
 
-Radiatus is a template, not a hosted service. Click **Use this template**, deploy it to your own Cloudflare account, and you have a working admin dashboard for records tied to Stripe customers and subscriptions &mdash; no server to run, no separate database to provision.
+Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** above (or **Use this template** to clone it first) and you have a working admin dashboard for records tied to Stripe customers and subscriptions on your own Cloudflare account &mdash; no server to run, no separate database to provision. After the button provisions your D1 database, you still need to run the migration once &mdash; see [Quick start](#quick-start). If you're setting this up with an AI coding agent, point it at [AGENTS.md](./AGENTS.md) for the exact step-by-step it should follow.
 
 ## Key features
 
@@ -44,6 +48,8 @@ Radiatus is a template, not a hosted service. Click **Use this template**, deplo
 | `test/worker.test.js` | Node test-runner tests for the Worker's request handlers |
 | `wrangler.toml` | Worker entrypoint and D1 binding |
 | `assets/brand/` | Logo and favicon source files |
+| `AGENTS.md` | Deploy instructions written for an AI coding agent to follow |
+| `.dev.vars.example` | Template for local secrets; copy to `.dev.vars` |
 
 ## Database schema
 
@@ -69,10 +75,11 @@ Radiatus is a template, not a hosted service. Click **Use this template**, deplo
 
 3. Copy the `database_id` from the output above into `wrangler.toml`.
 
-4. Set the admin API token:
+4. Set the admin token, once for local dev and once for the deployed Worker &mdash; these are two separate values `wrangler` doesn't share:
 
    ```bash
-   npx wrangler secret put ADMIN_API_TOKEN
+   cp .dev.vars.example .dev.vars   # then fill in ADMIN_API_TOKEN; used by `wrangler dev` only, gitignored
+   npx wrangler secret put ADMIN_API_TOKEN   # uploads the secret your deployed Worker will use
    ```
 
 5. Run the migration and start the dev server:
