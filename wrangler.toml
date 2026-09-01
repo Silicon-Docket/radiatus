@@ -1,0 +1,8 @@
+name = "radiatus"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "radiatus"
+database_id = "replace-with-your-d1-database-id"
