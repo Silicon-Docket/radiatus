@@ -14,13 +14,23 @@ Two things, both from the same four variables.
 **The correspondence panel.** On the customer view in `/admin`, a
 **Correspondence** panel with a **Load correspondence** button. Clicking it
 lists message *metadata* — received date, sender, subject, attachment flag —
-from one shared mailbox, filtered to messages involving the customer's email
+from one shared mailbox, searched for messages involving the customer's email
 address. Each row links out to the message's Outlook `webLink`.
 
 **Auto-flagging.** A [Cron Trigger](#auto-flagging-and-the-cron-trigger) polls
 the same mailbox every 15 minutes and flags the accounts of people who wrote in,
 according to rules you edit in `src/flag-rules.js`. The **Accounts** table at
 the top of `/admin` is that queue.
+
+Read "searched for" literally rather than as a security boundary. The address
+becomes a term in a Graph KQL `$search` query, and only quote characters are
+stripped from it, so someone who already holds `ADMIN_API_TOKEN` can pass KQL
+operators and broaden the query to enumerate metadata in that mailbox beyond one
+customer's correspondence. That is a small step up from what the token already
+allows — it can query any address — which is why it is not treated as a hole to
+plug. The two properties that *are* boundaries hold regardless: the mailbox
+comes from configuration and no request can change it, and message bodies are
+excluded by the Exchange grant rather than by our filtering.
 
 ## What it deliberately does not do
 
