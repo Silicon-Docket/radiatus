@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <mask id="radiatus-corner-flare-favicon" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+    <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+    <line x1="2" y1="60" x2="34" y2="4" stroke="#000" stroke-width="5"/>
+    <line x1="2" y1="60" x2="56" y2="14" stroke="#000" stroke-width="5"/>
+    <line x1="2" y1="60" x2="64" y2="38" stroke="#000" stroke-width="5"/>
+  </mask>
+  <g mask="url(#radiatus-corner-flare-favicon)" fill="#15161C">
+    <polygon points="30,36 25,44.7 15,44.7 10,36 15,27.3 25,27.3"/>
+    <polygon points="46,30 39,42.1 25,42.1 18,30 25,17.9 39,17.9"/>
+    <polygon points="56,35 50.5,44.5 39.5,44.5 34,35 39.5,25.5 50.5,25.5"/>
+    <rect x="9" y="40" width="48" height="8"/>
+  </g>
+</svg>
