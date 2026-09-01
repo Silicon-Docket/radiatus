@@ -1,7 +1,7 @@
 {
   "name": "radiatus",
   "version": "1.0.0",
-  "description": "An open-source dashboard for managing Stripe subscriptions with Cloudflare",
+  "description": "An open-source CRM connecting Stripe and Cloudflare.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

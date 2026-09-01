@@ -8,7 +8,7 @@
 <h1 align="center">radiatus</h1>
 
 <p align="center">
-  <em>An open-source starter for building an admin surface over Stripe subscriptions, running entirely on Cloudflare.</em>
+  <em>An open-source CRM connecting Stripe and Cloudflare &mdash; search a customer, see their subscription status, and leave notes for your team.</em>
 </p>
 
 <p align="center">
@@ -32,10 +32,10 @@ Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** abo
 
 ## Key features
 
-- **Zero servers**: runs entirely on Cloudflare Workers + D1 &mdash; nothing to provision, patch, or scale by hand.
-- **Stripe-shaped by default**: every record is keyed to a `stripe_customer_id` and `stripe_subscription_id` out of the box.
-- **Admin UI included**: a built-in `/admin` page for create/list/update/delete &mdash; no separate frontend to build.
-- **Token-gated API**: every `/api/*` route requires an `Authorization: Token <token>` secret; nothing is open by default.
+- **Search-first troubleshooting**: look up a customer by email, or a Stripe customer/subscription ID, and see their live status, billing period, payment method, and recent invoices — not just what's stored locally.
+- **Notes on top of live data**: attach internal notes/flags to a customer or subscription, layered on top of the real Stripe record instead of replacing it.
+- **Zero servers**: runs entirely on Cloudflare Workers + D1 — nothing to provision, patch, or scale by hand.
+- **Token-gated API**: every `/api/*` route (including the Stripe lookup) requires an `Authorization: Token <token>` secret; nothing is open by default.
 - **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 migrations apply` runs migrations.
 
 ## Project structure
