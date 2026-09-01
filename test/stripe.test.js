@@ -267,3 +267,150 @@ test('listInvoicesForCustomer throws if customerId is falsy', async () => {
     /customerId is required/
   );
 });
+
+test('lookupStripeRecord handles subscription-ID lookup by fetching subscription then customer', async () => {
+  globalThis.fetch = async (url) => {
+    const { pathname } = new URL(url);
+    if (pathname === '/v1/subscriptions/sub_1') {
+      return new Response(
+        JSON.stringify({
+          id: 'sub_1',
+          status: 'active',
+          customer: 'cus_2',
+          current_period_start: 100,
+          current_period_end: 200,
+          cancel_at_period_end: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (pathname === '/v1/customers/cus_2') {
+      return new Response(
+        JSON.stringify({
+          id: 'cus_2',
+          email: 'sub_owner@example.com',
+          name: 'Subscription Owner',
+          invoice_settings: { default_payment_method: 'pm_1' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (pathname === '/v1/subscriptions') {
+      return new Response(
+        JSON.stringify({ data: [{ id: 'sub_1', status: 'active', current_period_start: 100, current_period_end: 200, cancel_at_period_end: false }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (pathname === '/v1/invoices') {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (pathname === '/v1/payment_methods/pm_1') {
+      return new Response(JSON.stringify({ id: 'pm_1', card: { brand: 'visa', last4: '4242' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error('Unexpected fetch to ' + pathname);
+  };
+  try {
+    const result = await lookupStripeRecord(ENV, 'sub_1');
+    assert.equal(result.found, true);
+    assert.equal(result.customer.id, 'cus_2');
+    assert.equal(result.customer.email, 'sub_owner@example.com');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('shapeSubscription handles Basil API version with period fields in items[0]', () => {
+  const basilShaped = shapeSubscription({
+    id: 'sub_1',
+    status: 'active',
+    cancel_at_period_end: false,
+    items: {
+      data: [
+        {
+          current_period_start: 3000,
+          current_period_end: 4000,
+        },
+      ],
+    },
+  });
+  assert.deepEqual(basilShaped, {
+    id: 'sub_1',
+    status: 'active',
+    currentPeriodStart: 3000,
+    currentPeriodEnd: 4000,
+    cancelAtPeriodEnd: false,
+  });
+});
+
+test('getCustomer returns null for deleted customers', async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ id: 'cus_deleted', email: 'old@example.com', deleted: true }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  try {
+    const customer = await getCustomer(ENV, 'cus_deleted');
+    assert.equal(customer, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('lookupStripeRecord returns partial result if payment method fetch fails', async () => {
+  globalThis.fetch = async (url) => {
+    const { pathname } = new URL(url);
+    if (pathname === '/v1/customers/cus_1') {
+      return new Response(
+        JSON.stringify({
+          id: 'cus_1',
+          email: 'person@example.com',
+          name: 'Person Example',
+          invoice_settings: { default_payment_method: 'pm_broken' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (pathname === '/v1/subscriptions') {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (pathname === '/v1/invoices') {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (pathname === '/v1/payment_methods/pm_broken') {
+      // Return a rate limit error on payment method fetch
+      return new Response(JSON.stringify({ error: { message: 'Rate limited' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error('Unexpected fetch to ' + pathname);
+  };
+  try {
+    const result = await lookupStripeRecord(ENV, 'cus_1');
+    assert.equal(result.found, true);
+    assert.equal(result.customer.email, 'person@example.com');
+    assert.equal(result.subscriptions.length, 0);
+    assert.equal(result.invoices.length, 0);
+    assert.equal(result.paymentMethod, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('stripeRequest throws StripeApiError on invalid JSON response', async () => {
+  globalThis.fetch = async () =>
+    new Response('<!DOCTYPE html><html><body>502 Bad Gateway</body></html>', {
+      status: 502,
+      headers: { 'content-type': 'text/html' },
+    });
+  try {
+    await assert.rejects(() => getCustomer(ENV, 'cus_1'), (err) => {
+      return err instanceof StripeApiError && err.status === 502 && err.message === 'Invalid response from Stripe';
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

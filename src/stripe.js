@@ -28,7 +28,12 @@ async function stripeRequest(env, path, params = {}) {
   const response = await fetch(url.toString(), {
     headers: { Authorization: 'Bearer ' + env.STRIPE_SECRET_KEY },
   });
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new StripeApiError(response.status, 'Invalid response from Stripe');
+  }
   if (!response.ok) {
     throw new StripeApiError(response.status, data.error?.message || 'Stripe API error');
   }
@@ -49,8 +54,10 @@ export async function findCustomerByEmail(env, email) {
   return result.data[0] || null;
 }
 
-export function getCustomer(env, customerId) {
-  return stripeRequestOrNullOn404(env, `/customers/${encodeURIComponent(customerId)}`);
+export async function getCustomer(env, customerId) {
+  const customer = await stripeRequestOrNullOn404(env, `/customers/${encodeURIComponent(customerId)}`);
+  if (customer && customer.deleted === true) return null;
+  return customer;
 }
 
 export function getSubscription(env, subscriptionId) {
@@ -78,11 +85,15 @@ export function shapeCustomer(customer) {
 }
 
 export function shapeSubscription(subscription) {
+  // Basil API version (2025-03-31+) moved period fields to items[0]; fall back to new location if top-level is missing
+  const periodStart = subscription.current_period_start ?? subscription.items?.data?.[0]?.current_period_start;
+  const periodEnd = subscription.current_period_end ?? subscription.items?.data?.[0]?.current_period_end;
+
   return {
     id: subscription.id,
     status: subscription.status,
-    currentPeriodStart: subscription.current_period_start,
-    currentPeriodEnd: subscription.current_period_end,
+    currentPeriodStart: periodStart,
+    currentPeriodEnd: periodEnd,
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
   };
 }
@@ -127,7 +138,12 @@ export async function lookupStripeRecord(env, rawQuery) {
   let paymentMethod = null;
   const defaultPaymentMethodId = customer.invoice_settings?.default_payment_method;
   if (defaultPaymentMethodId) {
-    paymentMethod = shapePaymentMethod(await getPaymentMethod(env, defaultPaymentMethodId));
+    try {
+      paymentMethod = shapePaymentMethod(await getPaymentMethod(env, defaultPaymentMethodId));
+    } catch {
+      // Payment method fetch failed, but return the rest of the lookup result
+      // (payment method is supplementary, not required for the lookup to succeed)
+    }
   }
 
   return {
