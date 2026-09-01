@@ -7,3 +7,8 @@
 # Shared bearer token required on every /api/* request (Authorization: Token <value>).
 # Generate one yourself, e.g.: openssl rand -hex 32
 ADMIN_API_TOKEN=
+
+# Stripe secret key used by /api/stripe/lookup for live customer/subscription/invoice data.
+# Use a *restricted* key with read-only access to Customers, Subscriptions, Invoices, and
+# PaymentMethods if you can — this Worker never writes to Stripe.
+STRIPE_SECRET_KEY=

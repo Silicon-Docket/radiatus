@@ -1,3 +1,5 @@
+import { lookupStripeRecord, StripeApiError } from './stripe.js';
+
 export const ADMIN_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -337,6 +339,25 @@ export default {
 
     if (!isAuthorized(request, env)) {
       return json({ error: 'Unauthorized. Send Authorization: Token <token>' }, 401);
+    }
+
+    if (url.pathname === '/api/stripe/lookup' && request.method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      if (!q) {
+        return json({ error: 'q is required' }, 400);
+      }
+      try {
+        const result = await lookupStripeRecord(env, q);
+        if (!result.found) {
+          return json({ error: 'Not found' }, 404);
+        }
+        return json(result);
+      } catch (error) {
+        if (error instanceof StripeApiError) {
+          return json({ error: 'Stripe API error: ' + error.message }, 502);
+        }
+        throw error;
+      }
     }
 
     if (url.pathname === '/api/entries' && request.method === 'GET') {

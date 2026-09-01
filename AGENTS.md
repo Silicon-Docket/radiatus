@@ -33,14 +33,16 @@ Instructions for an AI coding agent helping someone deploy this template to thei
 
    Parse `database_id` from the output and write it into `wrangler.toml` in place of `replace-with-your-d1-database-id`.
 
-4. Get a value for `ADMIN_API_TOKEN` from the human (or generate one and get their sign-off), then set it in both places it's needed — they are independent and `wrangler` does not sync them:
+4. Get a value for `ADMIN_API_TOKEN`, and a Stripe secret key for `STRIPE_SECRET_KEY` (ask the human for one — a restricted, read-only test-mode key is enough to verify the deploy works), then set both in the two places they're each needed — local `.dev.vars` and the deployed Worker's secrets are independent and `wrangler` does not sync them:
 
    ```bash
    cp .dev.vars.example .dev.vars
-   # write ADMIN_API_TOKEN=<value> into .dev.vars
+   # write ADMIN_API_TOKEN=<value> and STRIPE_SECRET_KEY=<value> into .dev.vars
 
    npx wrangler secret put ADMIN_API_TOKEN
-   # paste the same value when prompted — this uploads it to the deployed Worker
+   # paste the ADMIN_API_TOKEN value when prompted — uploads it to the deployed Worker
+   npx wrangler secret put STRIPE_SECRET_KEY
+   # paste the STRIPE_SECRET_KEY value when prompted
    ```
 
 5. Apply the schema to the new database:

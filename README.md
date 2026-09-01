@@ -75,11 +75,12 @@ Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** abo
 
 3. Copy the `database_id` from the output above into `wrangler.toml`.
 
-4. Set the admin token, once for local dev and once for the deployed Worker &mdash; these are two separate values `wrangler` doesn't share:
+4. Set the admin token and a Stripe secret key, once for local dev and once for the deployed Worker &mdash; these are two separate places `wrangler` doesn't share values between:
 
    ```bash
-   cp .dev.vars.example .dev.vars   # then fill in ADMIN_API_TOKEN; used by `wrangler dev` only, gitignored
-   npx wrangler secret put ADMIN_API_TOKEN   # uploads the secret your deployed Worker will use
+   cp .dev.vars.example .dev.vars   # then fill in ADMIN_API_TOKEN and STRIPE_SECRET_KEY; used by `wrangler dev` only, gitignored
+   npx wrangler secret put ADMIN_API_TOKEN     # uploads the admin token your deployed Worker will use
+   npx wrangler secret put STRIPE_SECRET_KEY   # uploads the Stripe key your deployed Worker will use
    ```
 
 5. Run the migration and start the dev server:
@@ -112,6 +113,7 @@ Authorization: Token <ADMIN_API_TOKEN>
 | `POST` | `/api/entries` | Create an entry |
 | `PUT` | `/api/entries/:id` | Update an entry's key/value |
 | `DELETE` | `/api/entries/:id` | Delete an entry |
+| `GET` | `/api/stripe/lookup?q=<email\|cus_...\|sub_...>` | Live customer + subscriptions + payment method + recent invoices from Stripe |
 
 ```js
 // create a subscription-scoped admin entry
@@ -134,6 +136,7 @@ await fetch('/api/entries', {
 
 - `ADMIN_API_TOKEN` is a shared secret, not a per-user credential &mdash; anyone holding it has full read/write access to every entry. Set it with `wrangler secret put`, never commit it, and rotate it if it leaks.
 - The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. Put it behind Cloudflare Access or your own auth if it needs to be restricted further.
+- `STRIPE_SECRET_KEY` follows the same handling as `ADMIN_API_TOKEN` &mdash; set via `wrangler secret put` for the deployed Worker and `.dev.vars` for local dev, never committed. Use a restricted, read-only key if your Stripe account supports it; this Worker never writes to Stripe.
 
 ## Testing and linting
 
