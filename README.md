@@ -1,10 +1,137 @@
-<div align="center">
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
-    <img src="assets/brand/logo-light.svg" alt="Radiatus" width="72" height="72">
+    <img src="assets/brand/logo-light.svg" alt="Radiatus" width="160" height="160">
   </picture>
+</p>
 
-  # radiatus
+<h1 align="center">radiatus</h1>
 
-  An open-source dashboard for managing Stripe subscriptions with Cloudflare
-</div>
+<p align="center">
+  <em>An open-source starter for building an admin surface over Stripe subscriptions, running entirely on Cloudflare.</em>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/Silicon-Docket/radiatus/actions/workflows/ci.yml"><img src="https://github.com/Silicon-Docket/radiatus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://developers.cloudflare.com/workers/"><img src="https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020.svg" alt="Cloudflare Workers"></a>
+  <a href="https://developers.cloudflare.com/d1/"><img src="https://img.shields.io/badge/storage-D1-F38020.svg" alt="Cloudflare D1"></a>
+</p>
+
+---
+
+**Source code**: [github.com/Silicon-Docket/radiatus](https://github.com/Silicon-Docket/radiatus)
+
+---
+
+Radiatus is a template, not a hosted service. Click **Use this template**, deploy it to your own Cloudflare account, and you have a working admin dashboard for records tied to Stripe customers and subscriptions &mdash; no server to run, no separate database to provision.
+
+## Key features
+
+- **Zero servers**: runs entirely on Cloudflare Workers + D1 &mdash; nothing to provision, patch, or scale by hand.
+- **Stripe-shaped by default**: every record is keyed to a `stripe_customer_id` and `stripe_subscription_id` out of the box.
+- **Admin UI included**: a built-in `/admin` page for create/list/update/delete &mdash; no separate frontend to build.
+- **Token-gated API**: every `/api/*` route requires an `Authorization: Token <token>` secret; nothing is open by default.
+- **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 execute` runs migrations.
+
+## Project structure
+
+| Path | What it is |
+| --- | --- |
+| `src/worker.js` | The Worker: routing, the admin page, request validation, D1 queries |
+| `migrations/0001_init.sql` | D1 schema for `subscription_admin_entries` |
+| `test/worker.test.js` | Node test-runner tests for the Worker's request handlers |
+| `wrangler.toml` | Worker entrypoint and D1 binding |
+| `assets/brand/` | Logo and favicon source files |
+
+## Quick start
+
+**Prerequisites**: a [Cloudflare account](https://dash.cloudflare.com/sign-up), Node.js, and the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (installed for you below).
+
+1. Use this template (or clone it) and install dependencies:
+
+   ```bash
+   npm install --save-dev wrangler
+   ```
+
+2. Create a D1 database:
+
+   ```bash
+   npx wrangler d1 create radiatus
+   ```
+
+3. Copy the `database_id` from the output above into `wrangler.toml`.
+
+4. Set the admin API token:
+
+   ```bash
+   npx wrangler secret put ADMIN_API_TOKEN
+   ```
+
+5. Run the migration and start the dev server:
+
+   ```bash
+   npm run db:migrate:local
+   npm run dev
+   ```
+
+6. Open the admin UI at [http://127.0.0.1:8787/admin](http://127.0.0.1:8787/admin).
+
+### Deploying
+
+```bash
+npm run db:migrate:remote   # apply the schema to your production D1 database
+npm run deploy               # ship the Worker
+```
+
+## API reference
+
+Every `/api/*` route requires:
+
+```
+Authorization: Token <ADMIN_API_TOKEN>
+```
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/entries?subscriptionId=sub_123` | List entries, optionally filtered by Stripe subscription ID |
+| `POST` | `/api/entries` | Create an entry |
+| `PUT` | `/api/entries/:id` | Update an entry's key/value |
+| `DELETE` | `/api/entries/:id` | Delete an entry |
+
+```js
+// create a subscription-scoped admin entry
+await fetch('/api/entries', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    Authorization: 'Token <ADMIN_API_TOKEN>',
+  },
+  body: JSON.stringify({
+    stripeCustomerId: 'cus_123',
+    stripeSubscriptionId: 'sub_123',
+    entryKey: 'feature_flag',
+    entryValue: '{"enabled":true}',
+  }),
+});
+```
+
+## Security notes
+
+- `ADMIN_API_TOKEN` is a shared secret, not a per-user credential &mdash; anyone holding it has full read/write access to every entry. Set it with `wrangler secret put`, never commit it, and rotate it if it leaks.
+- The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. Put it behind Cloudflare Access or your own auth if it needs to be restricted further.
+
+## Testing and linting
+
+```bash
+npm run lint
+npm test
+```
+
+## Contributing
+
+Check out the [good first issues](https://github.com/Silicon-Docket/radiatus/contribute), or see [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get set up.
+
+## License
+
+[MIT](./LICENSE)
