@@ -1,0 +1,14 @@
+# Copy this file to .dev.vars for local development (wrangler dev reads it automatically).
+# .dev.vars is gitignored — never commit real values.
+#
+# The "Deploy to Cloudflare Workers" button also reads this file to know which
+# secrets to prompt for during a one-click deploy.
+
+# Shared secret required on every /api/* request (Authorization: Token <value>).
+# Generate one yourself, e.g.: openssl rand -hex 32
+ADMIN_API_TOKEN=
+
+# Stripe secret key used by /api/stripe/lookup for live customer/subscription/invoice data.
+# Use a *restricted* key with read-only access to Customers, Subscriptions, Invoices, and
+# PaymentMethods if you can — this Worker never writes to Stripe.
+STRIPE_SECRET_KEY=

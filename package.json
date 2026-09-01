@@ -1,14 +1,20 @@
 {
   "name": "radiatus",
   "version": "1.0.0",
-  "description": "An open-source dashboard for managing Stripe subscriptions with Cloudflare",
+  "description": "An open-source CRM connecting Stripe and Cloudflare.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 execute radiatus --local --file=./migrations/0001_init.sql",
-    "db:migrate:remote": "wrangler d1 execute radiatus --remote --file=./migrations/0001_init.sql",
-    "lint": "node --check src/worker.js && node --check test/worker.test.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply radiatus --local",
+    "db:migrate:remote": "wrangler d1 migrations apply radiatus --remote",
+    "lint": "oxlint --deny-warnings src test db drizzle.config.js",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
+    "oxlint": "^1.80.0"
   },
   "repository": {
     "type": "git",
@@ -18,7 +24,7 @@
     "cloudflare",
     "d1",
     "stripe",
-    "admin-dashboard",
+    "crm",
     "template"
   ],
   "author": "",

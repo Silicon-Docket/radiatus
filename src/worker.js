@@ -1,3 +1,5 @@
+import { lookupStripeRecord, StripeApiError } from './stripe.js';
+
 export const ADMIN_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -16,64 +18,87 @@ export const ADMIN_HTML = `<!doctype html>
     </style>
   </head>
   <body>
-    <h1>Radiatus: Stripe Subscription Admin Entries</h1>
-    <p class="muted">Use your admin token in the <code>Authorization: Token &lt;token&gt;</code> field to create and manage records tied to Stripe subscriptions.</p>
+    <h1>Radiatus: Stripe Subscription CRM</h1>
+    <p class="muted">Search a customer by email, or a Stripe customer/subscription ID, to see their live status and attach notes.</p>
 
     <label>Admin API Token</label>
     <input id="token" type="password" placeholder="Paste ADMIN_API_TOKEN" />
 
-    <form id="entry-form">
-      <div class="row">
-        <div>
-          <label>Stripe Customer ID</label>
-          <input id="customer-id" required placeholder="cus_..." />
-        </div>
-        <div>
-          <label>Stripe Subscription ID</label>
-          <input id="subscription-id" required placeholder="sub_..." />
-        </div>
-      </div>
-      <label>Entry Key</label>
-      <input id="entry-key" required placeholder="feature_flag" />
-      <label>Entry Value (text or JSON)</label>
-      <textarea id="entry-value" rows="4" placeholder='{"enabled":true}'></textarea>
-      <button type="submit">Create entry</button>
-    </form>
-
     <div class="row">
       <div>
-        <label>Filter by Subscription ID</label>
-        <input id="filter-subscription" placeholder="sub_..." />
+        <label>Search</label>
+        <input id="search-input" placeholder="email, cus_..., or sub_..." />
       </div>
       <div>
-        <button id="load" type="button">Load entries</button>
+        <label>&nbsp;</label>
+        <button id="search" type="button">Search</button>
       </div>
     </div>
 
     <p id="status" class="muted"></p>
     <p id="error" class="error"></p>
 
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Customer</th>
-          <th>Subscription</th>
-          <th>Key</th>
-          <th>Value</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="entries"></tbody>
-    </table>
+    <div id="result" hidden>
+      <h2>Customer</h2>
+      <p id="customer-summary"></p>
+      <p id="correspondence" hidden>
+        <a id="outlook-search" target="_blank" rel="noopener noreferrer">Search this address in Outlook</a>
+        <button id="copy-email" type="button">Copy address</button>
+      </p>
+
+      <h2>Subscriptions</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Status</th><th>Current period</th></tr>
+        </thead>
+        <tbody id="subscriptions"></tbody>
+      </table>
+
+      <h2>Recent invoices</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Status</th><th>Amount due</th><th>Amount paid</th><th>Date</th></tr>
+        </thead>
+        <tbody id="invoices"></tbody>
+      </table>
+
+      <h2>Notes</h2>
+      <form id="entry-form">
+        <label>Subscription</label>
+        <select id="entry-subscription" required></select>
+        <label>Entry Key</label>
+        <input id="entry-key" required placeholder="feature_flag" />
+        <label>Entry Value (text or JSON)</label>
+        <textarea id="entry-value" rows="4" placeholder='{"enabled":true}'></textarea>
+        <button type="submit">Add note</button>
+      </form>
+
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Key</th><th>Value</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="entries"></tbody>
+      </table>
+    </div>
 
     <script>
-      const entriesBody = document.getElementById('entries');
-      const errorNode = document.getElementById('error');
-      const statusNode = document.getElementById('status');
       const tokenNode = document.getElementById('token');
-      const form = document.getElementById('entry-form');
-      const filterSubscription = document.getElementById('filter-subscription');
+      const searchInput = document.getElementById('search-input');
+      const searchButton = document.getElementById('search');
+      const statusNode = document.getElementById('status');
+      const errorNode = document.getElementById('error');
+      const resultNode = document.getElementById('result');
+      const customerSummary = document.getElementById('customer-summary');
+      const correspondence = document.getElementById('correspondence');
+      const outlookSearch = document.getElementById('outlook-search');
+      const copyEmail = document.getElementById('copy-email');
+      const subscriptionsBody = document.getElementById('subscriptions');
+      const invoicesBody = document.getElementById('invoices');
+      const entriesBody = document.getElementById('entries');
+      const entryForm = document.getElementById('entry-form');
+      const entrySubscriptionSelect = document.getElementById('entry-subscription');
+
+      let currentCustomerId = null;
 
       const authHeaders = () => ({
         'Content-Type': 'application/json',
@@ -86,20 +111,94 @@ export const ADMIN_HTML = `<!doctype html>
       }
 
       function setError(message) {
+        statusNode.textContent = '';
         errorNode.textContent = message;
       }
 
-      function renderRow(entry) {
+      function formatMoney(amount, currency) {
+        return (amount / 100).toFixed(2) + ' ' + currency.toUpperCase();
+      }
+
+      function formatDate(unixSeconds) {
+        return new Date(unixSeconds * 1000).toLocaleDateString();
+      }
+
+      // Hands the correspondence lookup to the operator's own Outlook session,
+      // so they see exactly the mail they are already entitled to see, under
+      // their own identity and audit trail. Deliberately not a server-side
+      // Microsoft Graph integration — see docs/decisions/2026-09-01-office365-mail.md.
+      // The deeplink URL shape is community-reported rather than documented by
+      // Microsoft, so the copy button is the guaranteed-working fallback.
+      function renderCorrespondence(email) {
+        if (!email) {
+          correspondence.hidden = true;
+          return;
+        }
+        outlookSearch.href =
+          'https://outlook.office.com/mail/deeplink/search?query=' + encodeURIComponent(email);
+        outlookSearch.textContent = 'Search ' + email + ' in Outlook';
+        copyEmail.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(email);
+            setStatus('Copied ' + email);
+          } catch (error) {
+            setError('Could not copy automatically — the address is ' + email);
+          }
+        };
+        correspondence.hidden = false;
+      }
+
+      function renderSubscriptions(subscriptions) {
+        subscriptionsBody.innerHTML = '';
+        entrySubscriptionSelect.innerHTML = '';
+        for (const subscription of subscriptions) {
+          const tr = document.createElement('tr');
+          const idCell = document.createElement('td');
+          idCell.textContent = subscription.id;
+          const statusCell = document.createElement('td');
+          statusCell.textContent = subscription.status;
+          const periodCell = document.createElement('td');
+          periodCell.textContent = formatDate(subscription.currentPeriodStart) + ' - ' + formatDate(subscription.currentPeriodEnd);
+          tr.appendChild(idCell);
+          tr.appendChild(statusCell);
+          tr.appendChild(periodCell);
+          subscriptionsBody.appendChild(tr);
+
+          const option = document.createElement('option');
+          option.value = subscription.id;
+          option.textContent = subscription.id + ' (' + subscription.status + ')';
+          entrySubscriptionSelect.appendChild(option);
+        }
+      }
+
+      function renderInvoices(invoices) {
+        invoicesBody.innerHTML = '';
+        for (const invoice of invoices) {
+          const tr = document.createElement('tr');
+          const idCell = document.createElement('td');
+          idCell.textContent = invoice.id;
+          const statusCell = document.createElement('td');
+          statusCell.textContent = invoice.status;
+          const dueCell = document.createElement('td');
+          dueCell.textContent = formatMoney(invoice.amountDue, invoice.currency);
+          const paidCell = document.createElement('td');
+          paidCell.textContent = formatMoney(invoice.amountPaid, invoice.currency);
+          const dateCell = document.createElement('td');
+          dateCell.textContent = formatDate(invoice.created);
+          tr.appendChild(idCell);
+          tr.appendChild(statusCell);
+          tr.appendChild(dueCell);
+          tr.appendChild(paidCell);
+          tr.appendChild(dateCell);
+          invoicesBody.appendChild(tr);
+        }
+      }
+
+      function renderEntryRow(entry) {
         const tr = document.createElement('tr');
 
         const idCell = document.createElement('td');
         idCell.textContent = String(entry.id);
-
-        const customerCell = document.createElement('td');
-        customerCell.textContent = entry.stripe_customer_id;
-
-        const subscriptionCell = document.createElement('td');
-        subscriptionCell.textContent = entry.stripe_subscription_id;
 
         const keyCell = document.createElement('td');
         const keyInput = document.createElement('input');
@@ -130,7 +229,7 @@ export const ADMIN_HTML = `<!doctype html>
             if (!updateResponse.ok) {
               throw new Error(updateData.error || 'Failed to update entry');
             }
-            setStatus('Updated entry ' + entry.id);
+            setStatus('Updated note ' + entry.id);
           } catch (error) {
             setError(error.message);
           }
@@ -147,7 +246,7 @@ export const ADMIN_HTML = `<!doctype html>
               throw new Error(deleteData.error || 'Failed to delete entry');
             }
             tr.remove();
-            setStatus('Deleted entry ' + entry.id);
+            setStatus('Deleted note ' + entry.id);
           } catch (error) {
             setError(error.message);
           }
@@ -157,8 +256,6 @@ export const ADMIN_HTML = `<!doctype html>
         actionsCell.appendChild(deleteButton);
 
         tr.appendChild(idCell);
-        tr.appendChild(customerCell);
-        tr.appendChild(subscriptionCell);
         tr.appendChild(keyCell);
         tr.appendChild(valueCell);
         tr.appendChild(actionsCell);
@@ -166,57 +263,102 @@ export const ADMIN_HTML = `<!doctype html>
         return tr;
       }
 
-      async function loadEntries() {
-        setStatus('Loading entries...');
-        const subId = encodeURIComponent(filterSubscription.value.trim());
-        const query = subId ? '?subscriptionId=' + subId : '';
-        const response = await fetch('/api/entries' + query, { headers: authHeaders() });
+      async function loadEntries(subscriptionId) {
+        const response = await fetch('/api/entries?subscriptionId=' + encodeURIComponent(subscriptionId), {
+          headers: authHeaders(),
+        });
         const data = await response.json();
-
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to load entries');
+          throw new Error(data.error || 'Failed to load notes');
         }
-
         entriesBody.innerHTML = '';
         for (const entry of data.entries) {
-          entriesBody.appendChild(renderRow(entry));
+          entriesBody.appendChild(renderEntryRow(entry));
         }
-
-        setStatus('Loaded ' + data.entries.length + ' entries');
       }
 
-      form.addEventListener('submit', async (event) => {
+      async function runSearch() {
+        try {
+          setStatus('Searching...');
+          resultNode.hidden = true;
+          entriesBody.innerHTML = '';
+          subscriptionsBody.innerHTML = '';
+          invoicesBody.innerHTML = '';
+          customerSummary.textContent = '';
+          correspondence.hidden = true;
+          currentCustomerId = null;
+          const q = searchInput.value.trim();
+          const response = await fetch('/api/stripe/lookup?q=' + encodeURIComponent(q), {
+            headers: authHeaders(),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Search failed');
+          }
+
+          currentCustomerId = data.customer.id;
+          customerSummary.textContent =
+            (data.customer.name || '(no name)') + ' — ' + data.customer.email + ' — ' + data.customer.id +
+            (data.paymentMethod ? ' — ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
+
+          renderCorrespondence(data.customer.email);
+          renderSubscriptions(data.subscriptions);
+          renderInvoices(data.invoices);
+          resultNode.hidden = false;
+
+          if (data.subscriptions.length > 0) {
+            await loadEntries(entrySubscriptionSelect.value);
+          } else {
+            entriesBody.innerHTML = '';
+          }
+
+          setStatus('Found ' + data.customer.email);
+        } catch (error) {
+          setError(error.message);
+        }
+      }
+
+      searchButton.addEventListener('click', runSearch);
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          runSearch();
+        }
+      });
+
+      entrySubscriptionSelect.addEventListener('change', async () => {
+        try {
+          await loadEntries(entrySubscriptionSelect.value);
+        } catch (error) {
+          setError(error.message);
+        }
+      });
+
+      entryForm.addEventListener('submit', async (event) => {
         try {
           event.preventDefault();
+          const subscriptionId = entrySubscriptionSelect.value;
+          if (!subscriptionId) {
+            throw new Error('No subscription selected');
+          }
           const payload = {
-            stripeCustomerId: document.getElementById('customer-id').value,
-            stripeSubscriptionId: document.getElementById('subscription-id').value,
+            stripeCustomerId: currentCustomerId,
+            stripeSubscriptionId: subscriptionId,
             entryKey: document.getElementById('entry-key').value,
             entryValue: document.getElementById('entry-value').value,
           };
-
           const response = await fetch('/api/entries', {
             method: 'POST',
             headers: authHeaders(),
             body: JSON.stringify(payload),
           });
           const data = await response.json();
-
           if (!response.ok) {
-            throw new Error(data.error || 'Failed to create entry');
+            throw new Error(data.error || 'Failed to create note');
           }
-
-          setStatus('Created entry ' + data.entry.id);
-          form.reset();
-          await loadEntries();
-        } catch (error) {
-          setError(error.message);
-        }
-      });
-
-      document.getElementById('load').addEventListener('click', async () => {
-        try {
-          await loadEntries();
+          setStatus('Added note ' + data.entry.id);
+          entryForm.reset();
+          await loadEntries(subscriptionId);
         } catch (error) {
           setError(error.message);
         }
@@ -261,8 +403,7 @@ function isAuthorized(request, env) {
   const authHeader = request.headers.get('authorization') || '';
   const [scheme, token] = authHeader.split(' ');
   const normalizedScheme = (scheme || '').toLowerCase();
-  const acceptedLegacyScheme = ['b', 'earer'].join('');
-  return (normalizedScheme === 'token' || normalizedScheme === acceptedLegacyScheme) && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN;
+  return normalizedScheme === 'token' && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN;
 }
 
 async function readJson(request) {
@@ -337,6 +478,28 @@ export default {
 
     if (!isAuthorized(request, env)) {
       return json({ error: 'Unauthorized. Send Authorization: Token <token>' }, 401);
+    }
+
+    if (url.pathname === '/api/stripe/lookup' && request.method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      if (!q) {
+        return json({ error: 'q is required' }, 400);
+      }
+      if (!env.STRIPE_SECRET_KEY) {
+        return json({ error: 'STRIPE_SECRET_KEY is not configured' }, 500);
+      }
+      try {
+        const result = await lookupStripeRecord(env, q);
+        if (!result.found) {
+          return json({ error: 'No Stripe customer or subscription matches that search' }, 404);
+        }
+        return json(result);
+      } catch (error) {
+        if (error instanceof StripeApiError) {
+          return json({ error: 'Stripe API error', stripeStatus: error.status }, 502);
+        }
+        throw error;
+      }
     }
 
     if (url.pathname === '/api/entries' && request.method === 'GET') {
