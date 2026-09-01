@@ -104,6 +104,7 @@ export const ADMIN_HTML = `<!doctype html>
       }
 
       function setError(message) {
+        statusNode.textContent = '';
         errorNode.textContent = message;
       }
 
@@ -248,6 +249,11 @@ export const ADMIN_HTML = `<!doctype html>
         try {
           setStatus('Searching...');
           resultNode.hidden = true;
+          entriesBody.innerHTML = '';
+          subscriptionsBody.innerHTML = '';
+          invoicesBody.innerHTML = '';
+          customerSummary.textContent = '';
+          currentCustomerId = null;
           const q = searchInput.value.trim();
           const response = await fetch('/api/stripe/lookup?q=' + encodeURIComponent(q), {
             headers: authHeaders(),
@@ -363,8 +369,7 @@ function isAuthorized(request, env) {
   const authHeader = request.headers.get('authorization') || '';
   const [scheme, token] = authHeader.split(' ');
   const normalizedScheme = (scheme || '').toLowerCase();
-  const acceptedLegacyScheme = ['b', 'earer'].join('');
-  return (normalizedScheme === 'token' || normalizedScheme === acceptedLegacyScheme) && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN;
+  return normalizedScheme === 'token' && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN;
 }
 
 async function readJson(request) {
@@ -446,15 +451,18 @@ export default {
       if (!q) {
         return json({ error: 'q is required' }, 400);
       }
+      if (!env.STRIPE_SECRET_KEY) {
+        return json({ error: 'STRIPE_SECRET_KEY is not configured' }, 500);
+      }
       try {
         const result = await lookupStripeRecord(env, q);
         if (!result.found) {
-          return json({ error: 'Not found' }, 404);
+          return json({ error: 'No Stripe customer or subscription matches that search' }, 404);
         }
         return json(result);
       } catch (error) {
         if (error instanceof StripeApiError) {
-          return json({ error: 'Stripe API error: ' + error.message }, 502);
+          return json({ error: 'Stripe API error', stripeStatus: error.status }, 502);
         }
         throw error;
       }

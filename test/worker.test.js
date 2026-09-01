@@ -85,6 +85,34 @@ test('/api/stripe/lookup returns 502 when Stripe errors', async () => {
   }
 });
 
+test('/api/stripe/lookup never leaks STRIPE_SECRET_KEY into a 502 body', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ error: { message: 'Invalid API Key provided: sk_test_SECRETVALUE' } }),
+      { status: 401, headers: { 'content-type': 'application/json' } }
+    );
+  try {
+    const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
+      headers: { Authorization: 'Token secret' },
+    });
+    const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test_SECRETVALUE' });
+    assert.equal(response.status, 502);
+    const bodyText = await response.text();
+    assert.ok(!bodyText.includes('SECRETVALUE'), 'response body must not contain the Stripe secret key');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('/api/stripe/lookup returns 500 when STRIPE_SECRET_KEY is not configured', async () => {
+  const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
+    headers: { Authorization: 'Token secret' },
+  });
+  const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret' });
+  assert.equal(response.status, 500);
+});
+
 test('/api/stripe/lookup returns the full lookup shape on success', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {

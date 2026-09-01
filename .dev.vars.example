@@ -4,7 +4,7 @@
 # The "Deploy to Cloudflare Workers" button also reads this file to know which
 # secrets to prompt for during a one-click deploy.
 
-# Shared bearer token required on every /api/* request (Authorization: Token <value>).
+# Shared secret required on every /api/* request (Authorization: Token <value>).
 # Generate one yourself, e.g.: openssl rand -hex 32
 ADMIN_API_TOKEN=
 

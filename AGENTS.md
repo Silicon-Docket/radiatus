@@ -61,4 +61,4 @@ Instructions for an AI coding agent helping someone deploy this template to thei
 
 ## If the human already clicked "Deploy to Cloudflare"
 
-The one-click button in the README provisions the D1 database and Worker automatically from `wrangler.toml`, and reads `.dev.vars.example` to prompt for `ADMIN_API_TOKEN` during setup. It does not run this template's migration. After it finishes, run step 5 and 7 above against the repository it created for them.
+The one-click button in the README provisions the D1 database and Worker automatically from `wrangler.toml`, and reads `.dev.vars.example` to prompt for `ADMIN_API_TOKEN` and `STRIPE_SECRET_KEY` during setup. It does not run this template's migration. After it finishes, run step 5 and 7 above against the repository it created for them.
