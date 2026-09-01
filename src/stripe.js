@@ -10,8 +10,13 @@ export class StripeApiError extends Error {
 
 export function classifyQuery(rawQuery) {
   const value = (rawQuery || '').trim();
-  if (value.startsWith('cus_')) return { type: 'customer', value };
-  if (value.startsWith('sub_')) return { type: 'subscription', value };
+  // Stripe IDs consist of prefix, underscore, and alphanumeric characters only
+  if (value.startsWith('cus_') && /^cus_[a-zA-Z0-9]+$/.test(value)) {
+    return { type: 'customer', value };
+  }
+  if (value.startsWith('sub_') && /^sub_[a-zA-Z0-9]+$/.test(value)) {
+    return { type: 'subscription', value };
+  }
   return { type: 'email', value };
 }
 
@@ -45,23 +50,25 @@ export async function findCustomerByEmail(env, email) {
 }
 
 export function getCustomer(env, customerId) {
-  return stripeRequestOrNullOn404(env, `/customers/${customerId}`);
+  return stripeRequestOrNullOn404(env, `/customers/${encodeURIComponent(customerId)}`);
 }
 
 export function getSubscription(env, subscriptionId) {
-  return stripeRequestOrNullOn404(env, `/subscriptions/${subscriptionId}`);
+  return stripeRequestOrNullOn404(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
 }
 
 export function getPaymentMethod(env, paymentMethodId) {
-  return stripeRequestOrNullOn404(env, `/payment_methods/${paymentMethodId}`);
+  return stripeRequestOrNullOn404(env, `/payment_methods/${encodeURIComponent(paymentMethodId)}`);
 }
 
 export async function listSubscriptionsForCustomer(env, customerId) {
+  if (!customerId) throw new Error('customerId is required');
   const result = await stripeRequest(env, '/subscriptions', { customer: customerId, limit: 10 });
   return result.data;
 }
 
 export async function listInvoicesForCustomer(env, customerId) {
+  if (!customerId) throw new Error('customerId is required');
   const result = await stripeRequest(env, '/invoices', { customer: customerId, limit: 10 });
   return result.data;
 }

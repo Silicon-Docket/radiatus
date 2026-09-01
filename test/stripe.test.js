@@ -10,6 +10,8 @@ import {
   shapeInvoice,
   shapePaymentMethod,
   lookupStripeRecord,
+  listSubscriptionsForCustomer,
+  listInvoicesForCustomer,
 } from '../src/stripe.js';
 
 const ENV = { STRIPE_SECRET_KEY: 'sk_test_123' };
@@ -216,4 +218,52 @@ test('lookupStripeRecord surfaces a Stripe-side failure as StripeApiError', asyn
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('path traversal attempts are encoded and cannot escape to other endpoints', async () => {
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    // Verify the path stays within /v1/customers even with traversal attempt
+    assert.equal(parsed.pathname, '/v1/customers/cus_a%2F..%2F..%2Fbalance');
+    return new Response(JSON.stringify({ error: { message: 'No such customer' } }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    // Attempt to traverse to /v1/balance endpoint
+    await getCustomer(ENV, 'cus_a/../../balance');
+    // Should get 404 but path should be encoded
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('classifyQuery rejects malicious IDs with special characters and treats them as email', () => {
+  // Path traversal attempt should not be classified as customer
+  assert.deepEqual(classifyQuery('cus_a/../../balance'), { type: 'email', value: 'cus_a/../../balance' });
+  // Query string injection attempt should not be classified as subscription
+  assert.deepEqual(classifyQuery('sub_x?limit=999'), { type: 'email', value: 'sub_x?limit=999' });
+});
+
+test('listSubscriptionsForCustomer throws if customerId is falsy', async () => {
+  await assert.rejects(
+    () => listSubscriptionsForCustomer(ENV, null),
+    /customerId is required/
+  );
+  await assert.rejects(
+    () => listSubscriptionsForCustomer(ENV, ''),
+    /customerId is required/
+  );
+});
+
+test('listInvoicesForCustomer throws if customerId is falsy', async () => {
+  await assert.rejects(
+    () => listInvoicesForCustomer(ENV, null),
+    /customerId is required/
+  );
+  await assert.rejects(
+    () => listInvoicesForCustomer(ENV, ''),
+    /customerId is required/
+  );
 });
