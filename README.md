@@ -49,6 +49,8 @@ Radiatus is a template, not a hosted service. Click **Use this template**, deplo
 
 `db/schema.js` (Drizzle ORM, `drizzle-orm/sqlite-core`) is the source of truth for the D1 table shape. It's used only to generate migration SQL, not as a runtime query layer — `src/worker.js` still talks to D1 directly. To change the schema: edit `db/schema.js`, run `npm run db:generate` to write a new file under `migrations/`, then `npm run db:migrate:local` (or `db:migrate:remote`) to apply it.
 
+> **Upgrading an existing deployment?** `db:migrate:local`/`db:migrate:remote` now use `wrangler d1 migrations apply`, which tracks applied migrations in its own bookkeeping table. If you already ran the old `wrangler d1 execute --file=./migrations/0001_init.sql` against a real database, that table exists but isn't recorded as applied, so the first run will fail with `table already exists`. Mark it applied without rerunning it: `npx wrangler d1 execute radiatus --remote --command "INSERT INTO d1_migrations (name) VALUES ('0000_init.sql')"` (drop `--remote` for `--local`).
+
 ## Quick start
 
 **Prerequisites**: a [Cloudflare account](https://dash.cloudflare.com/sign-up), Node.js, and the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (installed for you below).
