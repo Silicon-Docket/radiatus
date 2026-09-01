@@ -120,9 +120,17 @@ export async function pollAndFlag(env, deps = {}) {
     const rule = evaluateRules(message, rules);
     const sender = (message.from?.address || '').trim().toLowerCase();
 
+    // Never flag the support mailbox on its own outgoing mail. listRecentMessages
+    // already scopes to the Inbox, which should keep Sent Items out — but that
+    // scoping is unverified against a live tenant, and the failure it guards
+    // against is bad enough to warrant two independent defences: every reply the
+    // team sends ("Re: refund request") would otherwise self-flag the mailbox and
+    // pin it to the top of the queue forever.
+    const isOwnMailbox = sender === (env.GRAPH_MAILBOX || '').trim().toLowerCase();
+
     // A matched message with no sender address has nothing to flag: accounts
     // are keyed by email. It is still recorded below so the run moves on.
-    if (rule && sender) {
+    if (rule && sender && !isOwnMailbox) {
       let stripeCustomerId = null;
       // No key configured means no Stripe to ask; skipping saves a round trip
       // per flagged message that could only ever come back 401.

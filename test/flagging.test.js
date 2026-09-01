@@ -336,3 +336,38 @@ test('pollAndFlag reads the mailbox from env and never binds unparameterised SQL
   // It was stored, just as an inert bound value.
   assert.equal(fake.accounts.size, 1);
 });
+
+test('the support mailbox is never flagged by the team\'s own replies', async () => {
+  // Inbox scoping in listRecentMessages should keep Sent Items out, but that is
+  // unverified against a live tenant and the failure is bad enough to warrant a
+  // second defence: without this, every "Re: refund request" the team sends
+  // flags the support mailbox itself and pins it to the top of the queue.
+  const fake = createFakeD1();
+  const reply = message({
+    id: 'AAMkAD_sent_1',
+    subject: 'Re: refund request',
+    from: { name: 'Support', address: 'Support@Example.com' },
+    toRecipients: [{ name: 'Ada', address: 'ada@example.com' }],
+  });
+
+  const summary = await pollAndFlag(pollEnv(fake.db), pollDeps([reply]));
+
+  assert.equal(summary.flagged, 0, 'the mailbox must not flag itself');
+  assert.equal(summary.processed, 1, 'the message is still recorded so the run moves on');
+  assert.equal(fake.accounts.size, 0, 'no account row is created for the mailbox itself');
+});
+
+test('a customer whose address merely resembles the mailbox is still flagged', async () => {
+  // The self-flag guard is an exact address match, not a domain or prefix check
+  // — narrowing it further would silently drop real customers.
+  const fake = createFakeD1();
+  const fromCustomer = message({
+    id: 'AAMkAD_cust_1',
+    from: { name: 'Ada', address: 'support-team@example.com' },
+  });
+
+  const summary = await pollAndFlag(pollEnv(fake.db), pollDeps([fromCustomer]));
+
+  assert.equal(summary.flagged, 1);
+  assert.deepEqual([...fake.accounts.keys()], ['support-team@example.com']);
+});

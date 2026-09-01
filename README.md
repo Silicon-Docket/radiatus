@@ -155,7 +155,7 @@ What flags an account is yours to decide, in [`src/flag-rules.js`](./src/flag-ru
 
 **Rules match on the message subject and sender address only. Never the body.** That is not a limitation waiting to be lifted: the Exchange grant this integration asks for (`Application Mail.ReadBasic`) excludes message content at the grant, so bodies are never fetched in the first place. Matching on body text would mean upgrading to `Mail.Read`, at which point a leaked `ADMIN_API_TOKEN` could read every message in the mailbox. A rule that needs body text cannot be written here, on purpose.
 
-Flagging is idempotent by Graph message ID, so clearing a flag sticks &mdash; a later poll over the same message will not raise it again. With the `GRAPH_*` variables unset the cron still fires and does nothing at all.
+Flagging is idempotent by Graph message ID, so clearing a flag sticks &mdash; a later poll over the same message will not raise it again. The poll asks Graph for immutable IDs, because the default IDs change when a message is filed into a folder, which would otherwise resurrect a flag the moment an operator tidied up after handling it. That header is one of the things not yet verified against a live tenant; see [the setup doc](./docs/office365-mail-setup.md). With the `GRAPH_*` variables unset the cron still fires and does nothing at all.
 
 ## Security notes
 

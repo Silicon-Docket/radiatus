@@ -357,7 +357,9 @@ test('listRecentMessages polls the env mailbox from the watermark, oldest first'
   resetTokenCache();
   const calls = stubFetch({
     graph: (url) => {
-      assert.equal(url.pathname, '/v1.0/users/support%40example.com/messages');
+      // Inbox only. /users/{id}/messages spans Sent Items, so the team's own
+      // replies would flag the support mailbox as an account on every thread.
+      assert.equal(url.pathname, '/v1.0/users/support%40example.com/mailFolders/inbox/messages');
       // `ge`, not `gt`: receivedDateTime is second-granularity, so a strict
       // comparison would drop a message sharing the boundary second. The
       // re-fetched boundary message is skipped by processed_messages instead.
@@ -380,6 +382,35 @@ test('listRecentMessages polls the env mailbox from the watermark, oldest first'
     assert.deepEqual(messages[0].from, { name: 'Person Example', address: 'person@example.com' });
     assert.ok(!JSON.stringify(messages).includes('PRIVATE BODY TEXT'), 'the poller sees metadata only');
     assert.equal(calls.graph.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages asks for immutable ids so a filed message keeps its idempotency key', async () => {
+  resetTokenCache();
+  // Graph message ids are not stable by default: filing a message into a folder
+  // reassigns the id. Idempotency is keyed on that id, so without this header an
+  // operator who clears a flag and then files the mail gets it flagged again on
+  // the next poll — which the README explicitly promises cannot happen.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await listRecentMessages(ENV, '2026-08-30T10:15:00Z');
+    assert.equal(calls.graph[0].init.headers.Prefer, 'IdType="ImmutableId"');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listCorrespondence still reads the whole mailbox, not just the inbox', async () => {
+  resetTokenCache();
+  // The poller is inbox-scoped on purpose; the correspondence panel must not be.
+  // An operator looking at a customer wants both sides of the thread, so Sent
+  // Items has to stay in scope here.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await listCorrespondence(ENV, 'person@example.com');
+    assert.equal(calls.graph[0].url.pathname, '/v1.0/users/support%40example.com/messages');
   } finally {
     globalThis.fetch = originalFetch;
   }

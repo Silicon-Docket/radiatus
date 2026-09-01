@@ -132,7 +132,7 @@ export async function getAccessToken(env) {
   return token.accessToken;
 }
 
-export async function graphRequest(env, path, params = {}) {
+export async function graphRequest(env, path, params = {}, extraHeaders = {}) {
   const accessToken = await getAccessToken(env);
   const url = new URL(GRAPH_API_BASE + path);
   for (const [key, value] of Object.entries(params)) {
@@ -141,7 +141,7 @@ export async function graphRequest(env, path, params = {}) {
   }
 
   const response = await fetch(url.toString(), {
-    headers: { Authorization: 'Bearer ' + accessToken },
+    headers: { Authorization: 'Bearer ' + accessToken, ...extraHeaders },
   });
 
   let data;
@@ -269,14 +269,30 @@ export async function listRecentMessages(env, sinceIso, limit = POLL_LIMIT) {
   const since = new Date(sinceIso);
   if (Number.isNaN(since.getTime())) throw new Error('sinceIso must be a valid date');
 
-  const path = '/users/' + encodeURIComponent(env.GRAPH_MAILBOX) + '/messages';
-  const result = await graphRequest(env, path, {
-    $filter: 'receivedDateTime ge ' + since.toISOString(),
-    // Same property as the filter, so this is not the cross-property sort that
-    // Exchange rejects as "too complex" (see docs/office365-mail-setup.md).
-    $orderby: 'receivedDateTime asc',
-    $select: MESSAGE_FIELDS,
-    $top: limit,
-  });
+  // Inbox only, unlike listCorrespondence which reads the whole mailbox on
+  // purpose (an operator wants both sides of a thread). The poller must not:
+  // /users/{id}/messages spans Sent Items, so the team's own "Re: refund
+  // request" reply is a message whose sender is the support mailbox, and every
+  // answered thread would permanently self-flag the mailbox to the top of the
+  // queue. Deleted Items is excluded for the same reason — deleting mail should
+  // stop it flagging.
+  const path = '/users/' + encodeURIComponent(env.GRAPH_MAILBOX) + '/mailFolders/inbox/messages';
+  const result = await graphRequest(
+    env,
+    path,
+    {
+      $filter: 'receivedDateTime ge ' + since.toISOString(),
+      // Same property as the filter, so this is not the cross-property sort that
+      // Exchange rejects as "too complex" (see docs/office365-mail-setup.md).
+      $orderby: 'receivedDateTime asc',
+      $select: MESSAGE_FIELDS,
+      $top: limit,
+    },
+    // Graph message ids are NOT stable by default — filing a message into a
+    // folder reassigns its id. Idempotency here is keyed on that id, so without
+    // this header an operator who clears a flag and then files the mail gets the
+    // flag raised again on the next poll. This asks for the immutable form.
+    { Prefer: 'IdType="ImmutableId"' }
+  );
   return (result.value || []).map(shapeMessage);
 }

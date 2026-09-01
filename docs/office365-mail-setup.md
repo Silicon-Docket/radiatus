@@ -192,9 +192,26 @@ and records every message it examined. The first run on a fresh database looks
 back 24 hours — a new deployment should start flagging what arrives from now
 on, not manufacture a queue out of a year of mailbox history.
 
-**Flags do not come back once cleared.** Idempotency is by Graph message ID: a
-message already in `processed_messages` is skipped entirely, so a retried,
-overlapping, or re-run poll cannot re-raise a flag an operator just resolved.
+**Flags do not come back once cleared** — provided Graph honours the immutable
+ID request. Idempotency is by Graph message ID: a message already in
+`processed_messages` is skipped entirely, so a retried, overlapping, or re-run
+poll cannot re-raise a flag an operator just resolved.
+
+There is a wrinkle worth knowing, because it bites the natural operator
+workflow. Graph message IDs are **not stable by default** — filing a message
+into a folder reassigns the ID, which would make the same message look new and
+re-raise the flag you just cleared. The poll therefore sends
+`Prefer: IdType="ImmutableId"`. **This is one of the unverified items below**:
+if your tenant does not honour it, the symptom is a flag reappearing after an
+agent handles a ticket, clears it, and files the mail — all within one 15-minute
+tick. If you see that, say so in an issue; the fallback is to key idempotency on
+`internetMessageId` instead.
+
+Separately, the poll reads **the Inbox only**, not the whole mailbox, so the
+team's own replies from Sent Items do not flag the support mailbox as a
+customer account. A second guard in `src/flagging.js` skips any message whose
+sender is `GRAPH_MAILBOX` itself, so that failure cannot occur even if the
+folder scoping is refused.
 (For the same reason, `processed_messages` must never be pruned — it holds the
 watermark as well as the idempotency keys. The comment on the table in
 `db/schema.js` explains what breaks if you do.)
@@ -227,8 +244,9 @@ which also means a broken rule fails silently: test yours.
 
 ## What this integration has NOT verified against a live tenant
 
-All three are honest unknowns. Treat the first as a risk to your setup time and
-the other two as risks to what the panel can show you.
+All five are honest unknowns. Treat the first as a risk to your setup time,
+the next two as risks to what the panel can show you, and the last two as risks
+to how the flag queue behaves in daily use.
 
 1. **Whether a client-credentials token with zero Entra `Mail.*` consent is
    accepted at all.** Microsoft's RBAC-for-Applications documentation implies
@@ -250,6 +268,22 @@ the other two as risks to what the panel can show you.
    with "the restriction or sort order is too complex to perform". If that
    happens, the fallback has nothing further to fall back to and the panel
    reports a Graph error. Nothing else in the deployment is affected.
+
+4. **Whether `Prefer: IdType="ImmutableId"` is honoured on the poll.** If it is
+   not, message IDs revert to changing when mail is filed into a folder, and a
+   flag can reappear after an agent handles the ticket, clears it, and files the
+   message — the exact sequence a tidy operator performs. Symptom: a flag you
+   just cleared is back within a tick, on the same subject. Fallback: key
+   `processed_messages` on `internetMessageId`, which is stable and included
+   under `Mail.ReadBasic`.
+5. **Whether `/mailFolders/inbox/messages` is permitted under the scoped
+   grant.** The poll reads the Inbox rather than the whole mailbox so the team's
+   own replies do not flag the support mailbox as a customer. If that path is
+   refused the poll errors every 15 minutes, visible only in the Cloudflare cron
+   log. Note the self-flag failure itself is guarded independently in
+   `src/flagging.js`, so a fallback to the mailbox-wide path would still not
+   flag the mailbox against itself — it would only widen what the poller reads
+   to include Sent and Deleted items.
 
 Note also that in `search` mode Graph orders results by relevance, and `$search`
 cannot be combined with `$orderby` on messages — so the 25 messages listed are
