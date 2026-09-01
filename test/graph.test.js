@@ -6,6 +6,7 @@ import {
   getAccessToken,
   shapeMessage,
   listCorrespondence,
+  listRecentMessages,
   resetTokenCache,
 } from '../src/graph.js';
 
@@ -347,6 +348,85 @@ test('the token request uses the client credentials grant against the configured
     assert.equal(init.body.get('scope'), 'https://graph.microsoft.com/.default');
     assert.equal(init.body.get('client_id'), 'client-abc');
     assert.equal(init.body.get('client_secret'), CLIENT_SECRET);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages polls the env mailbox from the watermark, oldest first', async () => {
+  resetTokenCache();
+  const calls = stubFetch({
+    graph: (url) => {
+      assert.equal(url.pathname, '/v1.0/users/support%40example.com/messages');
+      // `ge`, not `gt`: receivedDateTime is second-granularity, so a strict
+      // comparison would drop a message sharing the boundary second. The
+      // re-fetched boundary message is skipped by processed_messages instead.
+      assert.equal(url.searchParams.get('$filter'), 'receivedDateTime ge 2026-08-30T10:15:00.000Z');
+      assert.equal(url.searchParams.get('$orderby'), 'receivedDateTime asc');
+      // The same whitelist as every other call — no body, no bodyPreview.
+      assert.equal(
+        url.searchParams.get('$select'),
+        'id,subject,from,toRecipients,receivedDateTime,webLink,conversationId,hasAttachments',
+      );
+      assert.equal(url.searchParams.get('$top'), '50');
+      assert.equal(url.searchParams.get('$search'), null);
+      return jsonResponse({ value: [{ ...MESSAGE_FROM_GRAPH, bodyPreview: 'PRIVATE BODY TEXT' }] });
+    },
+  });
+  try {
+    const messages = await listRecentMessages(ENV, '2026-08-30T10:15:00Z');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].subject, 'Refund request');
+    assert.deepEqual(messages[0].from, { name: 'Person Example', address: 'person@example.com' });
+    assert.ok(!JSON.stringify(messages).includes('PRIVATE BODY TEXT'), 'the poller sees metadata only');
+    assert.equal(calls.graph.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages honours an explicit limit and tolerates an empty mailbox', async () => {
+  resetTokenCache();
+  const calls = stubFetch({ graph: () => jsonResponse({}) });
+  try {
+    assert.deepEqual(await listRecentMessages(ENV, '2026-08-30T10:15:00Z', 5), []);
+    assert.equal(calls.graph[0].url.searchParams.get('$top'), '5');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages rejects a watermark that is not a date, before calling Graph', async () => {
+  resetTokenCache();
+  let fetched = false;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return jsonResponse({ value: [] });
+  };
+  try {
+    // Only a canonical ISO timestamp can ever be concatenated into $filter.
+    for (const bad of ["2026-01-01' or startswith(subject,'a", 'not-a-date', '', null, undefined]) {
+      await assert.rejects(() => listRecentMessages(ENV, bad), /sinceIso must be a valid date/);
+    }
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages reads only env.GRAPH_MAILBOX and refuses to run without it', async () => {
+  resetTokenCache();
+  let fetched = false;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return jsonResponse({ value: [] });
+  };
+  try {
+    await assert.rejects(
+      () => listRecentMessages({ ...ENV, GRAPH_MAILBOX: undefined }, '2026-08-30T10:15:00Z'),
+      /GRAPH_MAILBOX is required/,
+    );
+    assert.equal(fetched, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

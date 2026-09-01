@@ -2,6 +2,13 @@ name = "radiatus"
 main = "src/worker.js"
 compatibility_date = "2026-09-01"
 
+# Auto-flagging poll. This costs nothing and does nothing until the four GRAPH_*
+# variables are set: the scheduled handler checks for them first and returns
+# immediately when they are missing, which is the state most deployments stay in.
+# See docs/office365-mail-setup.md.
+[triggers]
+crons = ["*/15 * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "radiatus"

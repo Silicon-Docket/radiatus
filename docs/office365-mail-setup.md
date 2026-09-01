@@ -2,16 +2,25 @@
 
 This is an **optional** feature. Radiatus runs fine without it: leave the four
 `GRAPH_*` variables blank and `/api/mail/lookup` answers `501 Not Implemented`,
-which the admin page renders as a plain "not configured" note. Nothing else in
-the template changes. It is deliberately kept out of [Quick start](../README.md#quick-start).
+which the admin page renders as a plain "not configured" note, while the
+auto-flagging cron fires on schedule and returns immediately without doing
+anything. Nothing else in the template changes. It is deliberately kept out of
+[Quick start](../README.md#quick-start).
 
 ## What it does
 
-On the customer view in `/admin`, a **Correspondence** panel with a
-**Load correspondence** button. Clicking it lists message *metadata* — received
-date, sender, subject, attachment flag — from one shared mailbox, filtered to
-messages involving the customer's email address. Each row links out to the
-message's Outlook `webLink`.
+Two things, both from the same four variables.
+
+**The correspondence panel.** On the customer view in `/admin`, a
+**Correspondence** panel with a **Load correspondence** button. Clicking it
+lists message *metadata* — received date, sender, subject, attachment flag —
+from one shared mailbox, filtered to messages involving the customer's email
+address. Each row links out to the message's Outlook `webLink`.
+
+**Auto-flagging.** A [Cron Trigger](#auto-flagging-and-the-cron-trigger) polls
+the same mailbox every 15 minutes and flags the accounts of people who wrote in,
+according to rules you edit in `src/flag-rules.js`. The **Accounts** table at
+the top of `/admin` is that queue.
 
 ## What it deliberately does not do
 
@@ -20,6 +29,8 @@ message's Outlook `webLink`.
   same short list. But the real guarantee is the Exchange grant below: the
   `Application Mail.ReadBasic` role does not include message content at all, so
   a leaked `ADMIN_API_TOKEN` still cannot pull mail bodies through this route.
+  This applies to the flag rules too — they match on subject and sender only,
+  and [cannot be given body text](#rules-see-the-subject-and-sender-only-never-the-body).
 - **One mailbox, from configuration only.** The mailbox comes from
   `GRAPH_MAILBOX`. No request parameter influences it. That is the difference
   between "look up correspondence with a customer" and "browse any mailbox in
@@ -159,6 +170,61 @@ npx wrangler secret put GRAPH_MAILBOX
 
 Then search a customer in `/admin` and click **Load correspondence**.
 
+## Auto-flagging and the cron trigger
+
+`wrangler.toml` declares a schedule:
+
+```toml
+[triggers]
+crons = ["*/15 * * * *"]
+```
+
+It is already there and you do not need to add it. The Worker's `scheduled`
+handler checks for the four `GRAPH_*` variables first and returns immediately
+when any is missing, so on a deployment that never enabled this feature the
+cron fires, does nothing, touches no database, and costs nothing. That is why
+shipping it enabled is safe. Change the expression if every 15 minutes is the
+wrong cadence; delete the `[triggers]` block if you want no schedule at all.
+
+Each run reads the watermark (the newest `received_at` in `processed_messages`),
+asks Graph for messages at or after it, evaluates the rules against each one,
+and records every message it examined. The first run on a fresh database looks
+back 24 hours — a new deployment should start flagging what arrives from now
+on, not manufacture a queue out of a year of mailbox history.
+
+**Flags do not come back once cleared.** Idempotency is by Graph message ID: a
+message already in `processed_messages` is skipped entirely, so a retried,
+overlapping, or re-run poll cannot re-raise a flag an operator just resolved.
+(For the same reason, `processed_messages` must never be pruned — it holds the
+watermark as well as the idempotency keys. The comment on the table in
+`db/schema.js` explains what breaks if you do.)
+
+### Rules see the SUBJECT and SENDER only. Never the body.
+
+> A flag rule receives the shaped metadata object — `subject`, `from`,
+> `toRecipients`, `receivedDateTime`. **There is no message body in it, and
+> there is no setting that adds one.**
+
+This is deliberate, and it is the same decision as Step 2 above wearing a
+different hat. Message content is excluded **at the Exchange grant**: the
+`Application Mail.ReadBasic` role does not include bodies, so they never reach
+the Worker to be matched against. Making body text available to rules would
+mean asking for `Application Mail.Read` — and at that point a leaked
+`ADMIN_API_TOKEN` could pull the full contents of every message in the mailbox
+through this deployment.
+
+Automatic flagging is not worth that trade. A rule that needs body text cannot
+be expressed here, by design, and the honest workaround is a narrower subject
+rule plus a human reading the message in Outlook — not a wider grant.
+
+`src/flag-rules.js` ships with exactly one rule, marked as an example to
+replace: subject matching `/\brefund\b/i`. That pattern matches the standalone
+word only — **not** "refunds", "refunded", or "non-refundable" — which is a
+documented choice, explained in the file along with how to widen it. Exporting
+an empty `FLAG_RULES` array turns flagging off while leaving the poll harmless.
+A rule that throws is caught and skipped so one bad regex cannot stop the run,
+which also means a broken rule fails silently: test yours.
+
 ## What this integration has NOT verified against a live tenant
 
 All three are honest unknowns. Treat the first as a risk to your setup time and
@@ -200,8 +266,13 @@ not necessarily the 25 most recent. The panel says so above the table.
   enabled by default only on E3/E5 licences. If you cannot live with that,
   do not enable this feature — or put `/admin` behind Cloudflare Access first.
 - **Turning it off** is removing the variables (`wrangler secret delete
-  GRAPH_CLIENT_SECRET`, etc.). Remove the RBAC assignment too if you are done
-  with it: `Remove-ManagementRoleAssignment`.
+  GRAPH_CLIENT_SECRET`, etc.). Both the panel and auto-flagging go inert
+  together; the cron keeps firing and keeps doing nothing. Remove the RBAC
+  assignment too if you are done with it: `Remove-ManagementRoleAssignment`.
+- **Auto-flagging runs unattended and logs nothing an operator reads.** A rule
+  that throws is skipped silently and a poll that fails is a failed cron
+  invocation in the Cloudflare dashboard, nowhere else. If flags stop appearing,
+  check the Worker's cron invocation log before assuming the mailbox is quiet.
 
 ## Background
 

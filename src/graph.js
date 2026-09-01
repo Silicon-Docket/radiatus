@@ -21,6 +21,11 @@ const MESSAGE_FIELDS = [
 
 const MESSAGE_LIMIT = 25;
 
+// One poll's worth of backlog. A run that hits this ceiling simply leaves the
+// remainder for the next tick: the watermark only advances past messages that
+// were actually recorded, so nothing is skipped, it just arrives a cron later.
+const POLL_LIMIT = 50;
+
 export class GraphApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -233,4 +238,45 @@ export async function listCorrespondence(env, address) {
     $top: MESSAGE_LIMIT,
   });
   return { messages: (filtered.value || []).map(shapeMessage), mode: 'sender-only' };
+}
+
+/**
+ * Lists message metadata received at or after `sinceIso`, oldest first, from the
+ * env.GRAPH_MAILBOX mailbox. This is the auto-flagging poller's view of the
+ * mailbox; listCorrespondence() above is the operator's per-customer view. They
+ * are separate exports because they ask different questions — but they share
+ * graphRequest, MESSAGE_FIELDS and shapeMessage, so the metadata-only whitelist
+ * is enforced in exactly one place for both.
+ *
+ * `ge`, not `gt`: receivedDateTime has second granularity and a support mailbox
+ * does receive two messages in the same second. `gt` against a watermark taken
+ * from the last message processed would silently drop the other one. `ge`
+ * re-fetches the boundary message instead, and processed_messages skips it —
+ * costing one wasted row per run and losing nothing.
+ *
+ * Returns an array of shaped messages.
+ */
+export async function listRecentMessages(env, sinceIso, limit = POLL_LIMIT) {
+  if (!env.GRAPH_MAILBOX) throw new Error('GRAPH_MAILBOX is required');
+
+  // The string check is not redundant: `new Date(null)` is not an invalid date,
+  // it is midnight 1970 — so a null watermark slipping through here would ask
+  // Graph for the mailbox's entire history rather than throwing.
+  if (typeof sinceIso !== 'string' || !sinceIso.trim()) throw new Error('sinceIso must be a valid date');
+  // Round-tripping through Date does two jobs: it rejects a malformed watermark
+  // before it reaches Graph, and it means nothing but a canonical ISO timestamp
+  // can ever be concatenated into $filter.
+  const since = new Date(sinceIso);
+  if (Number.isNaN(since.getTime())) throw new Error('sinceIso must be a valid date');
+
+  const path = '/users/' + encodeURIComponent(env.GRAPH_MAILBOX) + '/messages';
+  const result = await graphRequest(env, path, {
+    $filter: 'receivedDateTime ge ' + since.toISOString(),
+    // Same property as the filter, so this is not the cross-property sort that
+    // Exchange rejects as "too complex" (see docs/office365-mail-setup.md).
+    $orderby: 'receivedDateTime asc',
+    $select: MESSAGE_FIELDS,
+    $top: limit,
+  });
+  return (result.value || []).map(shapeMessage);
 }
