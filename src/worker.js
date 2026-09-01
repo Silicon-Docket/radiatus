@@ -1,4 +1,5 @@
 import { lookupStripeRecord, StripeApiError } from './stripe.js';
+import { listCorrespondence, GraphApiError } from './graph.js';
 
 export const ADMIN_HTML = `<!doctype html>
 <html lang="en">
@@ -41,10 +42,6 @@ export const ADMIN_HTML = `<!doctype html>
     <div id="result" hidden>
       <h2>Customer</h2>
       <p id="customer-summary"></p>
-      <p id="correspondence" hidden>
-        <a id="outlook-search" target="_blank" rel="noopener noreferrer">Search this address in Outlook</a>
-        <button id="copy-email" type="button">Copy address</button>
-      </p>
 
       <h2>Subscriptions</h2>
       <table>
@@ -60,6 +57,21 @@ export const ADMIN_HTML = `<!doctype html>
           <tr><th>ID</th><th>Status</th><th>Amount due</th><th>Amount paid</th><th>Date</th></tr>
         </thead>
         <tbody id="invoices"></tbody>
+      </table>
+
+      <h2>Correspondence</h2>
+      <p class="muted">
+        Message metadata from the shared Office 365 mailbox &mdash; dates, participants, and
+        subjects only. Message bodies are never fetched; open a message in Outlook to read it.
+        Optional feature: see docs/office365-mail-setup.md.
+      </p>
+      <button id="load-mail" type="button">Load correspondence</button>
+      <p id="mail-status" class="muted"></p>
+      <table>
+        <thead>
+          <tr><th>Received</th><th>From</th><th>Subject</th><th>Link</th></tr>
+        </thead>
+        <tbody id="messages"></tbody>
       </table>
 
       <h2>Notes</h2>
@@ -89,16 +101,17 @@ export const ADMIN_HTML = `<!doctype html>
       const errorNode = document.getElementById('error');
       const resultNode = document.getElementById('result');
       const customerSummary = document.getElementById('customer-summary');
-      const correspondence = document.getElementById('correspondence');
-      const outlookSearch = document.getElementById('outlook-search');
-      const copyEmail = document.getElementById('copy-email');
       const subscriptionsBody = document.getElementById('subscriptions');
       const invoicesBody = document.getElementById('invoices');
       const entriesBody = document.getElementById('entries');
       const entryForm = document.getElementById('entry-form');
       const entrySubscriptionSelect = document.getElementById('entry-subscription');
+      const loadMailButton = document.getElementById('load-mail');
+      const mailStatus = document.getElementById('mail-status');
+      const messagesBody = document.getElementById('messages');
 
       let currentCustomerId = null;
+      let currentCustomerEmail = null;
 
       const authHeaders = () => ({
         'Content-Type': 'application/json',
@@ -123,29 +136,103 @@ export const ADMIN_HTML = `<!doctype html>
         return new Date(unixSeconds * 1000).toLocaleDateString();
       }
 
-      // Hands the correspondence lookup to the operator's own Outlook session,
-      // so they see exactly the mail they are already entitled to see, under
-      // their own identity and audit trail. Deliberately not a server-side
-      // Microsoft Graph integration — see docs/decisions/2026-09-01-office365-mail.md.
-      // The deeplink URL shape is community-reported rather than documented by
-      // Microsoft, so the copy button is the guaranteed-working fallback.
-      function renderCorrespondence(email) {
-        if (!email) {
-          correspondence.hidden = true;
-          return;
+      function formatTimestamp(isoString) {
+        if (!isoString) return '';
+        const parsed = new Date(isoString);
+        return Number.isNaN(parsed.getTime()) ? isoString : parsed.toLocaleString();
+      }
+
+      function formatParticipant(participant) {
+        if (!participant) return '';
+        if (participant.name && participant.address) {
+          return participant.name + ' <' + participant.address + '>';
         }
-        outlookSearch.href =
-          'https://outlook.office.com/mail/deeplink/search?query=' + encodeURIComponent(email);
-        outlookSearch.textContent = 'Search ' + email + ' in Outlook';
-        copyEmail.onclick = async () => {
-          try {
-            await navigator.clipboard.writeText(email);
-            setStatus('Copied ' + email);
-          } catch (error) {
-            setError('Could not copy automatically — the address is ' + email);
+        return participant.address || participant.name || '';
+      }
+
+      function renderMessages(messages) {
+        messagesBody.innerHTML = '';
+        for (const message of messages) {
+          const tr = document.createElement('tr');
+
+          const receivedCell = document.createElement('td');
+          receivedCell.textContent = formatTimestamp(message.receivedDateTime);
+
+          const fromCell = document.createElement('td');
+          fromCell.textContent = formatParticipant(message.from);
+
+          const subjectCell = document.createElement('td');
+          subjectCell.textContent = message.subject || '(no subject)';
+          if (message.hasAttachments) {
+            subjectCell.textContent = subjectCell.textContent + ' (has attachments)';
           }
-        };
-        correspondence.hidden = false;
+
+          const linkCell = document.createElement('td');
+          // Outlook stays the reader: the row links out, it never shows a body.
+          // Only https links are honoured so a hostile webLink cannot smuggle in
+          // a javascript: URL.
+          if (typeof message.webLink === 'string' && message.webLink.startsWith('https://')) {
+            const link = document.createElement('a');
+            link.href = message.webLink;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Open in Outlook';
+            linkCell.appendChild(link);
+          }
+
+          tr.appendChild(receivedCell);
+          tr.appendChild(fromCell);
+          tr.appendChild(subjectCell);
+          tr.appendChild(linkCell);
+          messagesBody.appendChild(tr);
+        }
+      }
+
+      // Loaded on click, not with the search: most lookups never need it, and a
+      // Graph round trip per customer page view would be pure waste.
+      async function loadMail() {
+        const address = currentCustomerEmail;
+        try {
+          messagesBody.innerHTML = '';
+          if (!address) {
+            mailStatus.textContent = 'Search a customer with an email address first.';
+            return;
+          }
+          mailStatus.textContent = 'Loading correspondence for ' + address + '...';
+          const response = await fetch('/api/mail/lookup?q=' + encodeURIComponent(address), {
+            headers: authHeaders(),
+          });
+          if (response.status === 501) {
+            // Not an error: most deployments never set this feature up.
+            mailStatus.textContent =
+              'Office 365 mail lookup is not configured for this deployment. ' +
+              'This feature is optional — see docs/office365-mail-setup.md to enable it.';
+            return;
+          }
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to load correspondence');
+          }
+          renderMessages(data.messages);
+          if (data.messages.length === 0) {
+            mailStatus.textContent = 'No messages found for ' + address + '.';
+          } else if (data.mode === 'sender-only') {
+            mailStatus.textContent =
+              'Showing ' + data.messages.length + ' message(s) sent BY ' + address +
+              '. This mailbox does not allow searching all participants, so replies sent to ' +
+              address + ' are not listed.';
+          } else {
+            // Graph returns $search results by relevance and refuses $orderby
+            // alongside $search, so say so — a date column otherwise reads as
+            // "these are the most recent messages", which is not what this is.
+            mailStatus.textContent =
+              'Showing ' + data.messages.length + ' message(s) involving ' + address +
+              ', ranked by relevance rather than date — the newest message may not be listed.';
+          }
+        } catch (error) {
+          mailStatus.textContent = '';
+          setError(error.message);
+        }
       }
 
       function renderSubscriptions(subscriptions) {
@@ -284,9 +371,11 @@ export const ADMIN_HTML = `<!doctype html>
           entriesBody.innerHTML = '';
           subscriptionsBody.innerHTML = '';
           invoicesBody.innerHTML = '';
+          messagesBody.innerHTML = '';
           customerSummary.textContent = '';
-          correspondence.hidden = true;
+          mailStatus.textContent = '';
           currentCustomerId = null;
+          currentCustomerEmail = null;
           const q = searchInput.value.trim();
           const response = await fetch('/api/stripe/lookup?q=' + encodeURIComponent(q), {
             headers: authHeaders(),
@@ -297,11 +386,11 @@ export const ADMIN_HTML = `<!doctype html>
           }
 
           currentCustomerId = data.customer.id;
+          currentCustomerEmail = data.customer.email || null;
           customerSummary.textContent =
             (data.customer.name || '(no name)') + ' — ' + data.customer.email + ' — ' + data.customer.id +
             (data.paymentMethod ? ' — ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
 
-          renderCorrespondence(data.customer.email);
           renderSubscriptions(data.subscriptions);
           renderInvoices(data.invoices);
           resultNode.hidden = false;
@@ -319,6 +408,7 @@ export const ADMIN_HTML = `<!doctype html>
       }
 
       searchButton.addEventListener('click', runSearch);
+      loadMailButton.addEventListener('click', loadMail);
       searchInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -369,8 +459,17 @@ export const ADMIN_HTML = `<!doctype html>
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 
-export function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
+export function json(data, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
+}
+
+// Every one of these must be present before /api/mail/lookup will call Graph.
+// GRAPH_MAILBOX is the single mailbox the integration is allowed to read; there
+// is deliberately no request parameter that can change it.
+const GRAPH_ENV_KEYS = ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET', 'GRAPH_MAILBOX'];
+
+function isGraphConfigured(env) {
+  return GRAPH_ENV_KEYS.every((key) => Boolean(env[key]));
 }
 
 export function normalizeEntryPayload(payload = {}) {
@@ -497,6 +596,29 @@ export default {
       } catch (error) {
         if (error instanceof StripeApiError) {
           return json({ error: 'Stripe API error', stripeStatus: error.status }, 502);
+        }
+        throw error;
+      }
+    }
+
+    if (url.pathname === '/api/mail/lookup' && request.method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      if (!q) {
+        return json({ error: 'q is required' }, 400);
+      }
+      // Optional feature: an unconfigured template says so rather than 500ing.
+      if (!isGraphConfigured(env)) {
+        return json({ error: 'Office 365 mail lookup is not configured' }, 501);
+      }
+      try {
+        // env only — q is the address to look for, never the mailbox to read.
+        const result = await listCorrespondence(env, q);
+        return json(result, 200, { 'cache-control': 'no-store' });
+      } catch (error) {
+        if (error instanceof GraphApiError) {
+          // Graph's own message can quote back tenant/app configuration, so the
+          // status is all the client gets — same rule as the Stripe route.
+          return json({ error: 'Microsoft Graph error', graphStatus: error.status }, 502);
         }
         throw error;
       }
