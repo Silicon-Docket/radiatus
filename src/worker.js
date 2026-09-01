@@ -41,6 +41,10 @@ export const ADMIN_HTML = `<!doctype html>
     <div id="result" hidden>
       <h2>Customer</h2>
       <p id="customer-summary"></p>
+      <p id="correspondence" hidden>
+        <a id="outlook-search" target="_blank" rel="noopener noreferrer">Search this address in Outlook</a>
+        <button id="copy-email" type="button">Copy address</button>
+      </p>
 
       <h2>Subscriptions</h2>
       <table>
@@ -85,6 +89,9 @@ export const ADMIN_HTML = `<!doctype html>
       const errorNode = document.getElementById('error');
       const resultNode = document.getElementById('result');
       const customerSummary = document.getElementById('customer-summary');
+      const correspondence = document.getElementById('correspondence');
+      const outlookSearch = document.getElementById('outlook-search');
+      const copyEmail = document.getElementById('copy-email');
       const subscriptionsBody = document.getElementById('subscriptions');
       const invoicesBody = document.getElementById('invoices');
       const entriesBody = document.getElementById('entries');
@@ -114,6 +121,31 @@ export const ADMIN_HTML = `<!doctype html>
 
       function formatDate(unixSeconds) {
         return new Date(unixSeconds * 1000).toLocaleDateString();
+      }
+
+      // Hands the correspondence lookup to the operator's own Outlook session,
+      // so they see exactly the mail they are already entitled to see, under
+      // their own identity and audit trail. Deliberately not a server-side
+      // Microsoft Graph integration — see docs/decisions/2026-09-01-office365-mail.md.
+      // The deeplink URL shape is community-reported rather than documented by
+      // Microsoft, so the copy button is the guaranteed-working fallback.
+      function renderCorrespondence(email) {
+        if (!email) {
+          correspondence.hidden = true;
+          return;
+        }
+        outlookSearch.href =
+          'https://outlook.office.com/mail/deeplink/search?query=' + encodeURIComponent(email);
+        outlookSearch.textContent = 'Search ' + email + ' in Outlook';
+        copyEmail.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(email);
+            setStatus('Copied ' + email);
+          } catch (error) {
+            setError('Could not copy automatically — the address is ' + email);
+          }
+        };
+        correspondence.hidden = false;
       }
 
       function renderSubscriptions(subscriptions) {
@@ -253,6 +285,7 @@ export const ADMIN_HTML = `<!doctype html>
           subscriptionsBody.innerHTML = '';
           invoicesBody.innerHTML = '';
           customerSummary.textContent = '';
+          correspondence.hidden = true;
           currentCustomerId = null;
           const q = searchInput.value.trim();
           const response = await fetch('/api/stripe/lookup?q=' + encodeURIComponent(q), {
@@ -268,6 +301,7 @@ export const ADMIN_HTML = `<!doctype html>
             (data.customer.name || '(no name)') + ' — ' + data.customer.email + ' — ' + data.customer.id +
             (data.paymentMethod ? ' — ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
 
+          renderCorrespondence(data.customer.email);
           renderSubscriptions(data.subscriptions);
           renderInvoices(data.invoices);
           resultNode.hidden = false;
