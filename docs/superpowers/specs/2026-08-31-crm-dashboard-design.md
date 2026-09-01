@@ -47,6 +47,19 @@ Going with (1).
 - `subscription_admin_entries` keeps its exact current shape and its existing `/api/entries` CRUD endpoints — nothing about the table or those routes changes.
 - What changes is how the admin page presents it: instead of being the whole page, it becomes the "notes" section attached to whatever customer/subscription was just looked up via `/api/stripe/lookup`.
 
+#### When to graduate a key into a real column
+
+Staying generic (free-text `entry_key`/`entry_value`) is the right default — most notes are one-off and don't need schema behind them. Give a specific key its own typed column in `db/schema.js` once any of these actually happens, not preemptively:
+
+- **It gets filtered or queried on.** `entry_key`/`entry_value` aren't indexed per-key, so "find every subscription flagged `churn_risk`" means scanning rows and comparing strings. If a key needs to be searched or filtered on regularly, it needs its own indexed column.
+- **It needs a type the database should enforce.** A risk score, a boolean flag, a due date — anything that isn't naturally a string is currently stored as one and parsed by every reader, which is where bugs live. A real column with the right SQLite type stops that at the write, not at every read.
+- **More than one feature reads it and assumes a shape.** If two admin views both assume `entry_key = 'assigned_rep'` holds an email address, that's already a schema — it's just not enforced. Encoding it as a real column makes the contract explicit and lets Drizzle (and anyone reading `schema.js`) see it.
+- **It needs a constraint the generic table can't express**, like "at most one `assigned_rep` per subscription" — that needs a real unique index scoped to the key, which the current table has no clean way to do.
+
+To graduate a key: add the column to `db/schema.js` with a sensible default, `npm run db:generate`, and write a one-off backfill (a small script, or a follow-up migration) that copies the existing `entry_value` rows for that key into the new column. Whether to delete those rows from `subscription_admin_entries` afterward or leave them for history is a case-by-case call, not a rule — decide it when it actually happens, based on whether the old rows have any audit value.
+
+A key that's only ever been written once or twice, for one specific troubleshooting case, should just stay a generic entry. Graduating on the first use is the premature-abstraction failure mode this table exists to avoid.
+
 ### Admin page
 
 - A search box (email, customer ID, or subscription ID) replaces the current top-level entry list as the page's entry point.
