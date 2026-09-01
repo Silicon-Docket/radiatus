@@ -12,3 +12,30 @@ ADMIN_API_TOKEN=
 # Use a *restricted* key with read-only access to Customers, Subscriptions, Invoices, and
 # PaymentMethods if you can — this Worker never writes to Stripe.
 STRIPE_SECRET_KEY=
+
+# ---------------------------------------------------------------------------
+# OPTIONAL: Office 365 correspondence panel (/api/mail/lookup).
+#
+# Leave all four of these BLANK unless you want it. The Worker runs perfectly
+# well without them — the admin page simply reports the feature as not
+# configured, and nothing else changes. Setting some but not all of them is the
+# same as setting none.
+#
+# Setup is NOT part of Quick start and it is not a one-liner: it needs an Entra
+# app registration plus Exchange RBAC for Applications, and getting it wrong
+# grants tenant-wide mailbox access. Read docs/office365-mail-setup.md first.
+# ---------------------------------------------------------------------------
+
+# Directory (tenant) ID of the Entra app registration.
+GRAPH_TENANT_ID=
+
+# Application (client) ID of the same registration.
+GRAPH_CLIENT_ID=
+
+# Client secret VALUE (not the secret ID). Expires within 24 months — when it
+# does, this panel starts failing and nothing else warns you. Diarise the date.
+GRAPH_CLIENT_SECRET=
+
+# The ONE mailbox this integration is allowed to read, e.g. support@yourdomain.com.
+# It is read from here and only from here; no request parameter can change it.
+GRAPH_MAILBOX=
