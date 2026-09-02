@@ -1,6 +1,7 @@
-import { lookupStripeRecord, StripeApiError, type StripeEnv } from './stripe';
-import { listCorrespondence, GraphApiError, type GraphEnv } from './graph';
-import type { Env } from './types';
+import { lookupStripeRecord, StripeApiError } from './stripe';
+import { listCorrespondence, GraphApiError } from './graph';
+import { pollAndFlag } from './flagging';
+import { isGraphConfigured, isStripeConfigured, type Env } from './types';
 
 export const ADMIN_HTML = `<!doctype html>
 <html lang="en">
@@ -17,6 +18,9 @@ export const ADMIN_HTML = `<!doctype html>
       .row { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .muted { color: #555; font-size: 0.9rem; }
       .error { color: #b00020; }
+      input[type="checkbox"] { width: auto; margin: 0 0.4rem 0 0; }
+      .check { display: flex; align-items: center; padding: 0.5rem 0; }
+      .linkish { width: auto; background: none; border: 0; padding: 0; color: #0b57d0; text-decoration: underline; cursor: pointer; text-align: left; }
     </style>
   </head>
   <body>
@@ -26,6 +30,41 @@ export const ADMIN_HTML = `<!doctype html>
     <label>Admin API Token</label>
     <input id="token" type="password" placeholder="Paste ADMIN_API_TOKEN" />
 
+    <h2>Accounts</h2>
+    <p class="muted">
+      Accounts flagged automatically from the shared support mailbox. Flag rules see the
+      message <strong>subject and sender only</strong> &mdash; message bodies are never
+      fetched, by design. Edit <code>src/flag-rules.ts</code> to change what raises a flag.
+      Click an email to look that customer up below.
+    </p>
+
+    <div class="row">
+      <div>
+        <label>Search accounts</label>
+        <input id="account-search" placeholder="email or cus_..." />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <div class="check">
+          <input id="flagged-only" type="checkbox" checked />
+          <label for="flagged-only">Show flagged only</label>
+        </div>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="refresh-accounts" type="button">Refresh accounts</button>
+      </div>
+    </div>
+
+    <p id="accounts-status" class="muted"></p>
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Stripe customer</th><th>Flag reason</th><th>Subject</th><th>Flagged</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="accounts"></tbody>
+    </table>
+
+    <h2>Customer lookup</h2>
     <div class="row">
       <div>
         <label>Search</label>
@@ -110,6 +149,11 @@ export const ADMIN_HTML = `<!doctype html>
       const loadMailButton = document.getElementById('load-mail');
       const mailStatus = document.getElementById('mail-status');
       const messagesBody = document.getElementById('messages');
+      const accountSearchInput = document.getElementById('account-search');
+      const flaggedOnlyCheckbox = document.getElementById('flagged-only');
+      const refreshAccountsButton = document.getElementById('refresh-accounts');
+      const accountsStatus = document.getElementById('accounts-status');
+      const accountsBody = document.getElementById('accounts');
 
       let currentCustomerId = null;
       let currentCustomerEmail = null;
@@ -141,6 +185,112 @@ export const ADMIN_HTML = `<!doctype html>
         if (!isoString) return '';
         const parsed = new Date(isoString);
         return Number.isNaN(parsed.getTime()) ? isoString : parsed.toLocaleString();
+      }
+
+      function renderAccountRow(account) {
+        const tr = document.createElement('tr');
+
+        // The email is the route out of the flagged queue and into the
+        // troubleshooting view below, so it is a control, not just text.
+        const emailCell = document.createElement('td');
+        const emailButton = document.createElement('button');
+        emailButton.type = 'button';
+        emailButton.className = 'linkish';
+        emailButton.textContent = account.email;
+        emailButton.addEventListener('click', () => {
+          searchInput.value = account.email;
+          runSearch();
+        });
+        emailCell.appendChild(emailButton);
+
+        const customerCell = document.createElement('td');
+        // Null means the sender is not a known Stripe customer, or Stripe was
+        // unreachable when the flag was raised. Say so rather than showing a blank.
+        customerCell.textContent = account.stripe_customer_id || 'not a Stripe customer';
+
+        const reasonCell = document.createElement('td');
+        reasonCell.textContent = account.flag_reason || '';
+
+        const subjectCell = document.createElement('td');
+        subjectCell.textContent = account.flag_subject || '';
+
+        const whenCell = document.createElement('td');
+        whenCell.textContent = formatTimestamp(account.last_flagged_at);
+
+        const actionsCell = document.createElement('td');
+        if (account.flagged) {
+          const clearButton = document.createElement('button');
+          clearButton.type = 'button';
+          clearButton.textContent = 'Clear flag';
+          clearButton.addEventListener('click', async () => {
+            try {
+              clearButton.disabled = true;
+              const response = await fetch('/api/accounts/resolve', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify({ email: account.email }),
+              });
+              const data = await response.json();
+              if (!response.ok) {
+                throw new Error(data.error || 'Failed to clear the flag');
+              }
+              setStatus('Cleared the flag on ' + account.email);
+              await loadAccounts();
+            } catch (error) {
+              clearButton.disabled = false;
+              setError(error.message);
+            }
+          });
+          actionsCell.appendChild(clearButton);
+        } else {
+          actionsCell.textContent = 'cleared';
+        }
+
+        tr.appendChild(emailCell);
+        tr.appendChild(customerCell);
+        tr.appendChild(reasonCell);
+        tr.appendChild(subjectCell);
+        tr.appendChild(whenCell);
+        tr.appendChild(actionsCell);
+        return tr;
+      }
+
+      async function loadAccounts() {
+        try {
+          accountsStatus.textContent = 'Loading accounts...';
+          const params = new URLSearchParams({
+            q: accountSearchInput.value.trim(),
+            flaggedOnly: flaggedOnlyCheckbox.checked ? 'true' : 'false',
+          });
+          const response = await fetch('/api/accounts?' + params.toString(), {
+            headers: authHeaders(),
+          });
+          if (response.status === 401) {
+            // The page loads this list before anyone has typed a token, so a
+            // missing token is the normal first state, not a red error.
+            accountsBody.innerHTML = '';
+            accountsStatus.textContent = 'Paste your admin API token above to load flagged accounts.';
+            return;
+          }
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to load accounts');
+          }
+          accountsBody.innerHTML = '';
+          for (const account of data.accounts) {
+            accountsBody.appendChild(renderAccountRow(account));
+          }
+          if (data.accounts.length > 0) {
+            accountsStatus.textContent = 'Showing ' + data.accounts.length + ' account(s).';
+          } else if (flaggedOnlyCheckbox.checked) {
+            accountsStatus.textContent = 'No flagged accounts. Nothing needs attention.';
+          } else {
+            accountsStatus.textContent = 'No accounts recorded yet.';
+          }
+        } catch (error) {
+          accountsStatus.textContent = '';
+          setError(error.message);
+        }
       }
 
       function formatParticipant(participant) {
@@ -414,6 +564,21 @@ export const ADMIN_HTML = `<!doctype html>
 
       searchButton.addEventListener('click', runSearch);
       loadMailButton.addEventListener('click', loadMail);
+
+      refreshAccountsButton.addEventListener('click', loadAccounts);
+      flaggedOnlyCheckbox.addEventListener('change', loadAccounts);
+      accountSearchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          loadAccounts();
+        }
+      });
+      // The flagged queue is why an operator opens this page, so it loads
+      // itself — first on page load, and again as soon as a token is pasted,
+      // since the page-load attempt necessarily happens without one.
+      tokenNode.addEventListener('change', loadAccounts);
+      loadAccounts();
+
       searchInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -498,23 +663,6 @@ export type EntryValidation =
   | { ok: false; error: string }
   | { ok: true; value: NormalizedEntryPayload };
 
-// Every one of these must be present before /api/mail/lookup will call Graph.
-// GRAPH_MAILBOX is the single mailbox the integration is allowed to read; there
-// is deliberately no request parameter that can change it.
-const GRAPH_ENV_KEYS = ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET', 'GRAPH_MAILBOX'] as const;
-
-// A type predicate, not a plain boolean: past this check the compiler knows the
-// Graph credentials are strings, which is what makes listCorrespondence
-// uncallable on an unconfigured deployment rather than merely unreached.
-function isGraphConfigured(env: Env): env is Env & GraphEnv {
-  return GRAPH_ENV_KEYS.every((key) => Boolean(env[key]));
-}
-
-/** Same idea for Stripe: narrowing here is what lets lookupStripeRecord require the key. */
-function isStripeConfigured(env: Env): env is Env & StripeEnv {
-  return Boolean(env.STRIPE_SECRET_KEY);
-}
-
 export function normalizeEntryPayload(payload: EntryPayloadInput = {}): NormalizedEntryPayload {
   return {
     stripeCustomerId: String(payload.stripeCustomerId || '').trim(),
@@ -550,9 +698,14 @@ function isAuthorized(request: Request, env: Env): boolean {
   );
 }
 
-async function readJson(request: Request): Promise<EntryPayloadInput | null> {
+/**
+ * Generic because the two POST routes accept different bodies: an entry payload
+ * and `{ email }`. The caller names the shape; this only decides that malformed
+ * JSON is `null` rather than a thrown 500.
+ */
+async function readJson<T>(request: Request): Promise<T | null> {
   try {
-    return await request.json<EntryPayloadInput>();
+    return await request.json<T>();
   } catch {
     return null;
   }
@@ -604,6 +757,73 @@ function listEntries(db: D1Database, subscriptionId: string): Promise<D1Result<A
      FROM subscription_admin_entries
      ORDER BY created_at DESC`
   ).all<AdminEntryRow>();
+}
+
+/** A row of `accounts`, exactly as ACCOUNT_COLUMNS selects it. */
+export interface AccountRow {
+  email: string;
+  stripe_customer_id: string | null;
+  flagged: number;
+  flag_reason: string | null;
+  flag_subject: string | null;
+  last_flagged_at: string | null;
+  first_seen_at: string;
+}
+
+const ACCOUNT_COLUMNS =
+  'email, stripe_customer_id, flagged, flag_reason, flag_subject, last_flagged_at, first_seen_at';
+
+/**
+ * `%` and `_` are LIKE wildcards, and `_` is in every Stripe id an operator
+ * might paste, so searching "cus_1" would otherwise also match "cusX1". Escape
+ * them (and the escape character itself) and declare the escape in the SQL.
+ */
+function likePattern(value: string): string {
+  return '%' + value.replace(/[\\%_]/g, (character) => '\\' + character) + '%';
+}
+
+/**
+ * `flaggedOnly` is absent-means-true: the UI checkbox is checked on load and
+ * the flagged queue is the reason to open the page at all. Only an explicit
+ * false/0/no turns it off, so a typo shows fewer rows rather than silently
+ * widening the view.
+ */
+export function parseFlaggedOnly(rawValue: string | null | undefined): boolean {
+  if (rawValue === null || rawValue === undefined) return true;
+  const normalized = String(rawValue).trim().toLowerCase();
+  return !(normalized === 'false' || normalized === '0' || normalized === 'no');
+}
+
+/**
+ * One statement for all four q/flaggedOnly combinations, every value bound.
+ * `?1 = 0 OR flagged = 1` is how "no filter" is expressed without concatenating
+ * a WHERE clause together, and `?2` is '%' when there is no search term.
+ */
+function listAccounts(
+  db: D1Database,
+  { q, flaggedOnly }: { q: string; flaggedOnly: boolean }
+): Promise<D1Result<AccountRow>> {
+  return db.prepare(
+    `SELECT ${ACCOUNT_COLUMNS}
+     FROM accounts
+     WHERE (?1 = 0 OR flagged = 1)
+       AND (email LIKE ?2 ESCAPE '\\' OR COALESCE(stripe_customer_id, '') LIKE ?2 ESCAPE '\\')
+     ORDER BY COALESCE(last_flagged_at, first_seen_at) DESC
+     LIMIT 200`
+  ).bind(flaggedOnly ? 1 : 0, q ? likePattern(q) : '%').all<AccountRow>();
+}
+
+/**
+ * Clears a flag without deleting the row: flag_reason and flag_subject stay as
+ * history, and the account keeps appearing when "flagged only" is unchecked.
+ */
+function clearAccountFlag(db: D1Database, email: string): Promise<AccountRow | null> {
+  return db.prepare(
+    `UPDATE accounts
+     SET flagged = 0
+     WHERE email = ?1
+     RETURNING ${ACCOUNT_COLUMNS}`
+  ).bind(email).first<AccountRow>();
 }
 
 export default {
@@ -682,6 +902,36 @@ export default {
       }
     }
 
+    if (url.pathname === '/api/accounts' && request.method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      // Same bound as the mail route: an address is at most 320 characters, and
+      // an unbounded LIKE pattern is a pointless full scan.
+      if (q.length > 320) {
+        return json({ error: 'q is too long' }, 400);
+      }
+      const flaggedOnly = parseFlaggedOnly(url.searchParams.get('flaggedOnly'));
+      const result = await listAccounts(env.DB, { q, flaggedOnly });
+      return json({ accounts: result.results || [], flaggedOnly });
+    }
+
+    if (url.pathname === '/api/accounts/resolve' && request.method === 'POST') {
+      const payload = await readJson<{ email?: unknown }>(request);
+      // Lowercased on the way in, like every other write path: accounts are
+      // keyed by email and SQLite compares text case-sensitively.
+      const email = String(payload?.email || '').trim().toLowerCase();
+      if (!email) {
+        return json({ error: 'email is required' }, 400);
+      }
+      if (email.length > 320) {
+        return json({ error: 'email is too long' }, 400);
+      }
+      const account = await clearAccountFlag(env.DB, email);
+      if (!account) {
+        return json({ error: 'Account not found' }, 404);
+      }
+      return json({ account });
+    }
+
     if (url.pathname === '/api/entries' && request.method === 'GET') {
       const subscriptionId = (url.searchParams.get('subscriptionId') || '').trim();
       if (subscriptionId.length > 128) {
@@ -692,7 +942,7 @@ export default {
     }
 
     if (url.pathname === '/api/entries' && request.method === 'POST') {
-      const payload = await readJson(request);
+      const payload = await readJson<EntryPayloadInput>(request);
       const validation = validateEntryPayload(payload || {});
       if (!validation.ok) {
         return json({ error: validation.error }, 400);
@@ -704,7 +954,7 @@ export default {
 
     const idMatch = url.pathname.match(/^\/api\/entries\/(\d+)$/);
     if (idMatch && request.method === 'PUT') {
-      const payload = await readJson(request);
+      const payload = await readJson<EntryPayloadInput>(request);
       const normalized = normalizeEntryPayload(payload || {});
       if (!normalized.entryKey || normalized.entryKey.length > 120 || normalized.entryValue.length > 10_000) {
         return json({ error: 'entryKey is required and fields must meet size limits' }, 400);
@@ -731,5 +981,23 @@ export default {
     }
 
     return json({ error: 'Method not allowed' }, 405);
+  },
+
+  /**
+   * Cron entry point for auto-flagging (see [triggers] in wrangler.toml).
+   *
+   * Most adopters never configure Graph, and their Worker must not throw on a
+   * schedule because of a feature they did not enable — so an unconfigured
+   * deployment returns immediately and silently. There is nothing to report:
+   * "not set up" is the expected state, not a fault.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!isGraphConfigured(env)) return;
+    const run = pollAndFlag(env);
+    // Awaiting is what makes a failure surface as a failed cron invocation
+    // rather than a dropped promise; waitUntil registers the same work with the
+    // runtime so completion never depends on how the return value is treated.
+    ctx.waitUntil(run);
+    await run;
   },
 } satisfies ExportedHandler<Env>;

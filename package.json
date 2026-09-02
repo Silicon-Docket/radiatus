@@ -10,7 +10,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply radiatus --remote",
     "lint": "oxlint --deny-warnings src test db drizzle.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/check-test-list.mjs && tsx --test test/worker.test.ts test/stripe.test.ts test/graph.test.ts"
+    "test": "node scripts/check-test-list.mjs && tsx --test test/worker.test.ts test/stripe.test.ts test/graph.test.ts test/flagging.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260901.1",
