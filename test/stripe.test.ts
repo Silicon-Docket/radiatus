@@ -12,10 +12,17 @@ import {
   lookupStripeRecord,
   listSubscriptionsForCustomer,
   listInvoicesForCustomer,
-} from '../src/stripe.js';
+} from '../src/stripe';
 
 const ENV = { STRIPE_SECRET_KEY: 'sk_test_123' };
 const originalFetch = globalThis.fetch;
+
+/** `fetch` may be handed a string, a Request, or a URL; all three reach these stubs. */
+function toUrl(input: RequestInfo | URL): URL {
+  if (typeof input === 'string') return new URL(input);
+  if (input instanceof URL) return input;
+  return new URL(input.url);
+}
 
 test('classifyQuery detects customer, subscription, and email shapes', () => {
   assert.deepEqual(classifyQuery('cus_abc'), { type: 'customer', value: 'cus_abc' });
@@ -51,8 +58,8 @@ test('getCustomer throws StripeApiError on a non-404 failure', async () => {
 });
 
 test('findCustomerByEmail sends the email as a query param and returns the first match', async () => {
-  globalThis.fetch = async (url) => {
-    const parsed = new URL(url);
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const parsed = toUrl(url);
     assert.equal(parsed.pathname, '/v1/customers');
     assert.equal(parsed.searchParams.get('email'), 'person@example.com');
     return new Response(JSON.stringify({ data: [{ id: 'cus_1', email: 'person@example.com' }] }), {
@@ -62,6 +69,7 @@ test('findCustomerByEmail sends the email as a query param and returns the first
   };
   try {
     const customer = await findCustomerByEmail(ENV, 'person@example.com');
+    assert.ok(customer); // narrows StripeCustomer | null for the access below
     assert.equal(customer.id, 'cus_1');
   } finally {
     globalThis.fetch = originalFetch;
@@ -80,9 +88,9 @@ test('findCustomerByEmail returns null when Stripe has no match', async () => {
 });
 
 test('findCustomerByEmail retries lowercased when the typed casing finds nothing', async () => {
-  const searched = [];
-  globalThis.fetch = async (url) => {
-    const email = new URL(url).searchParams.get('email');
+  const searched: (string | null)[] = [];
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const email = toUrl(url).searchParams.get('email');
     searched.push(email);
     const data = email === 'person@example.com' ? [{ id: 'cus_1', email: 'person@example.com' }] : [];
     return new Response(JSON.stringify({ data }), {
@@ -92,6 +100,7 @@ test('findCustomerByEmail retries lowercased when the typed casing finds nothing
   };
   try {
     const customer = await findCustomerByEmail(ENV, 'Person@Example.com');
+    assert.ok(customer); // narrows StripeCustomer | null for the access below
     assert.equal(customer.id, 'cus_1');
     assert.deepEqual(searched, ['Person@Example.com', 'person@example.com']);
   } finally {
@@ -194,8 +203,8 @@ test('lookupStripeRecord returns found:false for an unknown email', async () => 
 });
 
 test('lookupStripeRecord assembles customer, subscriptions, invoices, and payment method', async () => {
-  globalThis.fetch = async (url) => {
-    const { pathname } = new URL(url);
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const { pathname } = toUrl(url);
     if (pathname === '/v1/customers/cus_1') {
       return new Response(
         JSON.stringify({
@@ -252,6 +261,7 @@ test('lookupStripeRecord assembles customer, subscriptions, invoices, and paymen
   try {
     const result = await lookupStripeRecord(ENV, 'cus_1');
     assert.equal(result.found, true);
+    assert.ok(result.found); // narrows the found:true branch for the accesses below
     assert.equal(result.customer.email, 'person@example.com');
     assert.equal(result.subscriptions.length, 1);
     assert.equal(result.subscriptions[0].id, 'sub_1');
@@ -276,8 +286,8 @@ test('lookupStripeRecord surfaces a Stripe-side failure as StripeApiError', asyn
 });
 
 test('path traversal attempts are encoded and cannot escape to other endpoints', async () => {
-  globalThis.fetch = async (url) => {
-    const parsed = new URL(url);
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const parsed = toUrl(url);
     // Verify the path stays within /v1/customers even with traversal attempt
     assert.equal(parsed.pathname, '/v1/customers/cus_a%2F..%2F..%2Fbalance');
     return new Response(JSON.stringify({ error: { message: 'No such customer' } }), {
@@ -324,8 +334,8 @@ test('listInvoicesForCustomer throws if customerId is falsy', async () => {
 });
 
 test('lookupStripeRecord handles subscription-ID lookup by fetching subscription then customer', async () => {
-  globalThis.fetch = async (url) => {
-    const { pathname } = new URL(url);
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const { pathname } = toUrl(url);
     if (pathname === '/v1/subscriptions/sub_1') {
       return new Response(
         JSON.stringify({
@@ -370,6 +380,7 @@ test('lookupStripeRecord handles subscription-ID lookup by fetching subscription
   try {
     const result = await lookupStripeRecord(ENV, 'sub_1');
     assert.equal(result.found, true);
+    assert.ok(result.found); // narrows the found:true branch for the accesses below
     assert.equal(result.customer.id, 'cus_2');
     assert.equal(result.customer.email, 'sub_owner@example.com');
   } finally {
@@ -415,8 +426,8 @@ test('getCustomer returns null for deleted customers', async () => {
 });
 
 test('lookupStripeRecord returns partial result if payment method fetch fails', async () => {
-  globalThis.fetch = async (url) => {
-    const { pathname } = new URL(url);
+  globalThis.fetch = async (url: RequestInfo | URL) => {
+    const { pathname } = toUrl(url);
     if (pathname === '/v1/customers/cus_1') {
       return new Response(
         JSON.stringify({
@@ -446,6 +457,7 @@ test('lookupStripeRecord returns partial result if payment method fetch fails', 
   try {
     const result = await lookupStripeRecord(ENV, 'cus_1');
     assert.equal(result.found, true);
+    assert.ok(result.found); // narrows the found:true branch for the accesses below
     assert.equal(result.customer.email, 'person@example.com');
     assert.equal(result.subscriptions.length, 0);
     assert.equal(result.invoices.length, 0);

@@ -8,13 +8,18 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply radiatus --local",
     "db:migrate:remote": "wrangler d1 migrations apply radiatus --remote",
-    "lint": "oxlint --deny-warnings src test db drizzle.config.js",
-    "test": "node --test"
+    "lint": "oxlint --deny-warnings src test db drizzle.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/worker.test.ts test/stripe.test.ts test/graph.test.ts"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260901.1",
+    "@types/node": "^26.4.1",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
-    "oxlint": "^1.80.0"
+    "oxlint": "^1.80.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   },
   "repository": {
     "type": "git",

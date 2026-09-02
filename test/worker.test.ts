@@ -1,11 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import worker, { normalizeEntryPayload, validateEntryPayload, ADMIN_HTML } from '../src/worker.js';
-import { resetTokenCache } from '../src/graph.js';
+import worker, { normalizeEntryPayload, validateEntryPayload, ADMIN_HTML } from '../src/worker';
+import { resetTokenCache } from '../src/graph';
+import type { CorrespondenceResult } from '../src/graph';
+import type { ShapedCustomer, ShapedInvoice, ShapedPaymentMethod, ShapedSubscription } from '../src/stripe';
+
+/**
+ * `Env.DB` is a required binding, but none of the routes exercised here reaches
+ * D1. Every method throws, so a test that starts touching the database fails
+ * loudly instead of passing against a silent no-op.
+ */
+function unusedDb(): D1Database {
+  const unreachable = (): never => {
+    throw new Error('these tests must not touch env.DB');
+  };
+  return {
+    prepare: unreachable,
+    batch: unreachable,
+    exec: unreachable,
+    withSession: unreachable,
+    dump: unreachable,
+  };
+}
+
+const DB = unusedDb();
+
+/** The body /api/stripe/lookup returns, in terms of the module's own shaped types. */
+interface LookupResponseBody {
+  customer: ShapedCustomer;
+  paymentMethod: ShapedPaymentMethod | null;
+  subscriptions: ShapedSubscription[];
+  invoices: ShapedInvoice[];
+}
 
 const GRAPH_CLIENT_SECRET = 'graph-client-SECRETVALUE';
 const GRAPH_ENV = {
+  DB,
   ADMIN_API_TOKEN: 'secret',
   GRAPH_TENANT_ID: 'tenant-abc',
   GRAPH_CLIENT_ID: 'client-abc',
@@ -13,14 +44,21 @@ const GRAPH_ENV = {
   GRAPH_MAILBOX: 'support@example.com',
 };
 
-function graphJson(body, status = 200) {
+/** `fetch` may be handed a string, a Request, or a URL; all three reach these stubs. */
+function toUrl(input: RequestInfo | URL): URL {
+  if (typeof input === 'string') return new URL(input);
+  if (input instanceof URL) return input;
+  return new URL(input.url);
+}
+
+function graphJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
 /** Routes by hostname so assertions do not depend on whether a token was cached. */
-function stubGraphFetch(onGraph) {
-  globalThis.fetch = async (input) => {
-    const url = new URL(typeof input === 'string' ? input : input.url);
+function stubGraphFetch(onGraph: (url: URL) => Response): void {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = toUrl(input);
     if (url.hostname === 'login.microsoftonline.com') {
       return graphJson({ access_token: 'graph-token', token_type: 'Bearer', expires_in: 3600 });
     }
@@ -31,7 +69,7 @@ function stubGraphFetch(onGraph) {
   };
 }
 
-function mailRequest(query = 'person@example.com') {
+function mailRequest(query: string | null = 'person@example.com'): Request {
   const suffix = query === null ? '' : '?q=' + encodeURIComponent(query);
   return new Request('https://worker.example/api/mail/lookup' + suffix, {
     headers: { Authorization: 'Token secret' },
@@ -57,6 +95,7 @@ test('normalizeEntryPayload trims and stringifies input', () => {
 test('validateEntryPayload requires subscription-linked fields', () => {
   const validation = validateEntryPayload({ entryKey: 'x' });
   assert.equal(validation.ok, false);
+  assert.ok(!validation.ok); // narrows the failure branch for the access below
   assert.match(validation.error, /required/);
 });
 
@@ -69,6 +108,7 @@ test('validateEntryPayload accepts expected payload', () => {
   });
 
   assert.equal(validation.ok, true);
+  assert.ok(validation.ok); // narrows the success branch for the accesses below
   assert.equal(validation.value.stripeCustomerId, 'cus_abc');
   assert.equal(validation.value.stripeSubscriptionId, 'sub_abc');
 });
@@ -77,13 +117,13 @@ test('/api/stripe/lookup requires q', async () => {
   const request = new Request('https://worker.example/api/stripe/lookup', {
     headers: { Authorization: 'Token secret' },
   });
-  const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
+  const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
   assert.equal(response.status, 400);
 });
 
 test('/api/stripe/lookup rejects an unauthorized request', async () => {
   const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1');
-  const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
+  const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
   assert.equal(response.status, 401);
 });
 
@@ -95,7 +135,7 @@ test('/api/stripe/lookup returns 404 when Stripe has no match', async () => {
     const request = new Request('https://worker.example/api/stripe/lookup?q=nobody@example.com', {
       headers: { Authorization: 'Token secret' },
     });
-    const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
+    const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
     assert.equal(response.status, 404);
   } finally {
     globalThis.fetch = originalFetch;
@@ -113,7 +153,7 @@ test('/api/stripe/lookup returns 502 when Stripe errors', async () => {
     const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
       headers: { Authorization: 'Token secret' },
     });
-    const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
+    const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
     assert.equal(response.status, 502);
   } finally {
     globalThis.fetch = originalFetch;
@@ -131,7 +171,7 @@ test('/api/stripe/lookup never leaks STRIPE_SECRET_KEY into a 502 body', async (
     const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
       headers: { Authorization: 'Token secret' },
     });
-    const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test_SECRETVALUE' });
+    const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test_SECRETVALUE' });
     assert.equal(response.status, 502);
     const bodyText = await response.text();
     assert.ok(!bodyText.includes('SECRETVALUE'), 'response body must not contain the Stripe secret key');
@@ -144,14 +184,14 @@ test('/api/stripe/lookup returns 500 when STRIPE_SECRET_KEY is not configured', 
   const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
     headers: { Authorization: 'Token secret' },
   });
-  const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret' });
+  const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret' });
   assert.equal(response.status, 500);
 });
 
 test('/api/stripe/lookup returns the full lookup shape on success', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url = new URL(typeof input === 'string' ? input : input.url);
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = toUrl(input);
     if (url.pathname === '/v1/customers') {
       return new Response(
         JSON.stringify({
@@ -213,9 +253,9 @@ test('/api/stripe/lookup returns the full lookup shape on success', async () => 
     const request = new Request('https://worker.example/api/stripe/lookup?q=someone@example.com', {
       headers: { Authorization: 'Token secret' },
     });
-    const response = await worker.fetch(request, { ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
+    const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret', STRIPE_SECRET_KEY: 'sk_test' });
     assert.equal(response.status, 200);
-    const body = await response.json();
+    const body = await response.json<LookupResponseBody>();
     assert.equal(body.customer.id, 'cus_1');
     assert.equal(body.customer.email, 'someone@example.com');
     assert.equal(body.subscriptions[0].id, 'sub_1');
@@ -262,19 +302,19 @@ test('/api/mail/lookup returns 501 when GRAPH_MAILBOX is unset', async () => {
 });
 
 test('/api/mail/lookup returns 501 when the Graph app credentials are unset', async () => {
-  for (const key of ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET']) {
+  for (const key of ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET'] as const) {
     const response = await worker.fetch(mailRequest(), { ...GRAPH_ENV, [key]: undefined });
     assert.equal(response.status, 501, key + ' unset should yield 501');
   }
-  const bare = await worker.fetch(mailRequest(), { ADMIN_API_TOKEN: 'secret' });
+  const bare = await worker.fetch(mailRequest(), { DB, ADMIN_API_TOKEN: 'secret' });
   assert.equal(bare.status, 501);
 });
 
 test('/api/mail/lookup returns 502 on a Graph failure without leaking the client secret', async () => {
   const originalFetch = globalThis.fetch;
   resetTokenCache();
-  globalThis.fetch = async (input) => {
-    const url = new URL(typeof input === 'string' ? input : input.url);
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = toUrl(input);
     if (url.hostname === 'login.microsoftonline.com') {
       return graphJson(
         {
@@ -325,7 +365,7 @@ test('/api/mail/lookup returns message metadata and no-store on success', async 
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const bodyText = await response.text();
     assert.ok(!bodyText.includes('PRIVATE BODY TEXT'), 'message bodies must never reach the client');
-    const body = JSON.parse(bodyText);
+    const body: CorrespondenceResult = JSON.parse(bodyText);
     assert.equal(body.mode, 'search');
     assert.equal(body.messages.length, 1);
     assert.equal(body.messages[0].subject, 'Refund request');
@@ -348,7 +388,7 @@ test('/api/mail/lookup reports sender-only mode when Graph refuses $search', asy
   try {
     const response = await worker.fetch(mailRequest(), GRAPH_ENV);
     assert.equal(response.status, 200);
-    const body = await response.json();
+    const body = await response.json<CorrespondenceResult>();
     assert.equal(body.mode, 'sender-only');
     assert.deepEqual(body.messages, []);
   } finally {
@@ -359,7 +399,7 @@ test('/api/mail/lookup reports sender-only mode when Graph refuses $search', asy
 test('/api/mail/lookup reads the mailbox from env, never from the query string', async () => {
   const originalFetch = globalThis.fetch;
   resetTokenCache();
-  const requestedPaths = [];
+  const requestedPaths: string[] = [];
   stubGraphFetch((url) => {
     requestedPaths.push(url.pathname);
     return graphJson({ value: [] });

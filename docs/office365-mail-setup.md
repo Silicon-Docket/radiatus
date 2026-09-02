@@ -16,7 +16,7 @@ message's Outlook `webLink`.
 ## What it deliberately does not do
 
 - **No message bodies.** Not `body`, not `bodyPreview`. `shapeMessage()` in
-  `src/graph.js` is an explicit allow-list, and `$select` asks Graph for the
+  `src/graph.ts` is an explicit allow-list, and `$select` asks Graph for the
   same short list. But the real guarantee is the Exchange grant below: the
   `Application Mail.ReadBasic` role does not include message content at all, so
   a leaked `ADMIN_API_TOKEN` still cannot pull mail bodies through this route.
