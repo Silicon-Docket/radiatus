@@ -21,8 +21,108 @@ const MESSAGE_FIELDS = [
 
 const MESSAGE_LIMIT = 25;
 
+/**
+ * The bindings this client needs. The three app-registration values are
+ * required — the worker narrows `Env` through `isGraphConfigured` before it can
+ * call in. `GRAPH_MAILBOX` stays optional because `listCorrespondence` checks it
+ * itself and refuses to run without it, which is a promise worth keeping in the
+ * module that makes the request rather than only at the call site.
+ */
+export interface GraphEnv {
+  GRAPH_TENANT_ID: string;
+  GRAPH_CLIENT_ID: string;
+  GRAPH_CLIENT_SECRET: string;
+  GRAPH_MAILBOX?: string;
+}
+
+/** Query-string values Graph accepts; `$top` is a number, so values are stringified. */
+type GraphParams = Record<string, string | number | undefined | null>;
+
+/** Graph wraps a failure in `{ error: { message } }` whatever the endpoint. */
+interface GraphErrorEnvelope {
+  error?: { message?: string };
+}
+
+/** The client-credentials token response, plus the error shape it uses on failure. */
+interface GraphTokenResponse {
+  access_token: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+}
+
+interface GraphToken {
+  accessToken: string;
+  expiresAtMs: number;
+}
+
+export interface GraphEmailAddress {
+  name?: string;
+  address?: string;
+}
+
+export interface GraphRecipient {
+  emailAddress?: GraphEmailAddress | null;
+}
+
+/**
+ * The message fields this module reads. Graph sends far more — bodies included —
+ * which is what the index signature acknowledges: those fields arrive, and
+ * shapeMessage() below is what stops them leaving.
+ */
+export interface GraphMessage {
+  id?: string;
+  subject?: string | null;
+  from?: GraphRecipient | null;
+  toRecipients?: GraphRecipient[] | null;
+  receivedDateTime?: string;
+  webLink?: string;
+  conversationId?: string;
+  hasAttachments?: boolean;
+  [key: string]: unknown;
+}
+
+interface GraphMessageList {
+  value?: GraphMessage[] | null;
+}
+
+/**
+ * SECURITY BOUNDARY. Name and address only, so a participant entry cannot carry
+ * the rest of a Graph `emailAddress`-bearing object out with it.
+ */
+export interface ShapedParticipant {
+  name: string | undefined;
+  address: string | undefined;
+}
+
+/**
+ * SECURITY BOUNDARY. The exact set of message fields that leaves this module,
+ * and the declared return type of shapeMessage() — so adding a stray field to
+ * that object literal is a compile error, not something only a test catches.
+ * `body` and `bodyPreview` are absent by decision, not by oversight.
+ * Adding a field here means deciding it is safe to expose to anyone holding
+ * ADMIN_API_TOKEN.
+ */
+export interface ShapedMessage {
+  id: string | undefined;
+  subject: string | null | undefined;
+  from: ShapedParticipant | null;
+  toRecipients: ShapedParticipant[];
+  receivedDateTime: string | undefined;
+  webLink: string | undefined;
+  conversationId: string | undefined;
+  hasAttachments: boolean | undefined;
+}
+
+export interface CorrespondenceResult {
+  messages: ShapedMessage[];
+  mode: 'search' | 'sender-only';
+}
+
 export class GraphApiError extends Error {
-  constructor(status, message) {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
     this.name = 'GraphApiError';
     this.status = status;
@@ -35,7 +135,7 @@ export class GraphApiError extends Error {
  * (AADSTS7000215 does exactly that for a bad secret). Strip it either way so a
  * thrown GraphApiError can never carry the credential into a log line.
  */
-function redactSecret(message, secret) {
+function redactSecret(message: string, secret: string): string {
   if (!secret || !message) return message;
   return String(message).split(secret).join('[redacted]');
 }
@@ -44,14 +144,14 @@ function redactSecret(message, secret) {
  * Cached at module scope as a *promise*, not a value, so concurrent requests
  * share one in-flight token fetch instead of each starting their own.
  */
-let tokenPromise = null;
+let tokenPromise: Promise<GraphToken> | null = null;
 
 /** Test-only escape hatch: the module-scope cache otherwise leaks across tests. */
-export function resetTokenCache() {
+export function resetTokenCache(): void {
   tokenPromise = null;
 }
 
-async function requestAccessToken(env) {
+async function requestAccessToken(env: GraphEnv): Promise<GraphToken> {
   const url = LOGIN_BASE + '/' + encodeURIComponent(env.GRAPH_TENANT_ID) + '/oauth2/v2.0/token';
   const body = new URLSearchParams({
     client_id: env.GRAPH_CLIENT_ID,
@@ -66,9 +166,9 @@ async function requestAccessToken(env) {
     body,
   });
 
-  let data;
+  let data: GraphTokenResponse;
   try {
-    data = await response.json();
+    data = await response.json<GraphTokenResponse>();
   } catch {
     throw new GraphApiError(response.status, 'Invalid response from the Microsoft identity platform');
   }
@@ -88,7 +188,7 @@ async function requestAccessToken(env) {
   };
 }
 
-export async function getAccessToken(env) {
+export async function getAccessToken(env: GraphEnv): Promise<string> {
   // Loops rather than recurses. Each pass either returns a live token, adopts a
   // replacement another caller installed while we were awaiting, or evicts the
   // entry we ourselves found stale. The adoption case is what keeps a *refresh*
@@ -98,7 +198,7 @@ export async function getAccessToken(env) {
     const cached = tokenPromise;
     if (!cached) break;
 
-    let token = null;
+    let token: GraphToken | null = null;
     try {
       token = await cached;
     } catch {
@@ -127,21 +227,23 @@ export async function getAccessToken(env) {
   return token.accessToken;
 }
 
-export async function graphRequest(env, path, params = {}) {
+export async function graphRequest<T>(env: GraphEnv, path: string, params: GraphParams = {}): Promise<T> {
   const accessToken = await getAccessToken(env);
   const url = new URL(GRAPH_API_BASE + path);
   for (const [key, value] of Object.entries(params)) {
     // URLSearchParams percent-encodes for us; encoding here too would double-encode.
-    if (value !== undefined && value !== null) url.searchParams.set(key, value);
+    if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
   }
 
   const response = await fetch(url.toString(), {
     headers: { Authorization: 'Bearer ' + accessToken },
   });
 
-  let data;
+  // Read once, serve both branches: the payload intersected with Graph's error
+  // envelope, rather than `any`.
+  let data: T & GraphErrorEnvelope;
   try {
-    data = await response.json();
+    data = await response.json<T & GraphErrorEnvelope>();
   } catch {
     throw new GraphApiError(response.status, 'Invalid response from Microsoft Graph');
   }
@@ -159,9 +261,10 @@ export async function graphRequest(env, path, params = {}) {
  * of this integration, and this function is the code-side half of that promise
  * (the Exchange `Application Mail.ReadBasic` grant is the other half).
  * Do not add a field here without deciding it is safe to expose to anyone
- * holding ADMIN_API_TOKEN.
+ * holding ADMIN_API_TOKEN. The declared `ShapedMessage` return type is what
+ * makes an accidental addition a compile error.
  */
-export function shapeMessage(message) {
+export function shapeMessage(message: GraphMessage): ShapedMessage {
   return {
     id: message.id,
     subject: message.subject,
@@ -174,13 +277,13 @@ export function shapeMessage(message) {
   };
 }
 
-function shapeParticipant(participant) {
-  const emailAddress = participant?.emailAddress || {};
+function shapeParticipant(participant: GraphRecipient | null | undefined): ShapedParticipant {
+  const emailAddress: GraphEmailAddress = participant?.emailAddress || {};
   return { name: emailAddress.name, address: emailAddress.address };
 }
 
 /** OData string literals are single-quoted; a literal quote is escaped by doubling it. */
-function escapeODataString(value) {
+function escapeODataString(value: string): string {
   return String(value).replace(/'/g, "''");
 }
 
@@ -189,7 +292,7 @@ function escapeODataString(value) {
  * would end the term early and let the rest of it become query syntax. The blast
  * radius is limited to this one mailbox, but drop the characters anyway.
  */
-function escapeSearchTerm(value) {
+function escapeSearchTerm(value: string): string {
   return String(value).replace(/["\\]/g, '');
 }
 
@@ -202,7 +305,7 @@ function escapeSearchTerm(value) {
  * 'sender-only' when it was refused and we fell back to filtering on sender —
  * a view that shows what the customer sent but not what was replied.
  */
-export async function listCorrespondence(env, address) {
+export async function listCorrespondence(env: GraphEnv, address: string): Promise<CorrespondenceResult> {
   if (!env.GRAPH_MAILBOX) throw new Error('GRAPH_MAILBOX is required');
   const participant = (address || '').trim();
   if (!participant) throw new Error('address is required');
@@ -210,7 +313,7 @@ export async function listCorrespondence(env, address) {
   const path = '/users/' + encodeURIComponent(env.GRAPH_MAILBOX) + '/messages';
 
   try {
-    const searched = await graphRequest(env, path, {
+    const searched = await graphRequest<GraphMessageList>(env, path, {
       // $search on messages cannot be combined with $orderby; Graph returns 400.
       $search: '"participants:' + escapeSearchTerm(participant) + '"',
       $select: MESSAGE_FIELDS,
@@ -226,7 +329,7 @@ export async function listCorrespondence(env, address) {
     if (!refused) throw error;
   }
 
-  const filtered = await graphRequest(env, path, {
+  const filtered = await graphRequest<GraphMessageList>(env, path, {
     $filter: "from/emailAddress/address eq '" + escapeODataString(participant) + "'",
     $orderby: 'receivedDateTime desc',
     $select: MESSAGE_FIELDS,

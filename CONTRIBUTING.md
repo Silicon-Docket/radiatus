@@ -12,6 +12,7 @@ Before opening a PR:
 
 ```bash
 npm run lint
+npm run typecheck
 npm test
 ```
 

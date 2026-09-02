@@ -1,5 +1,6 @@
-import { lookupStripeRecord, StripeApiError } from './stripe.js';
-import { listCorrespondence, GraphApiError } from './graph.js';
+import { lookupStripeRecord, StripeApiError, type StripeEnv } from './stripe';
+import { listCorrespondence, GraphApiError, type GraphEnv } from './graph';
+import type { Env } from './types';
 
 export const ADMIN_HTML = `<!doctype html>
 <html lang="en">
@@ -463,20 +464,58 @@ export const ADMIN_HTML = `<!doctype html>
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 
-export function json(data, status = 200, extraHeaders = {}) {
+export function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
 }
+
+/** A row of subscription_admin_entries, as the RETURNING clauses below select it. */
+interface AdminEntryRow {
+  id: number;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  entry_key: string;
+  entry_value: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The request body /api/entries accepts: four fields of anything, coerced below. */
+export interface EntryPayloadInput {
+  stripeCustomerId?: unknown;
+  stripeSubscriptionId?: unknown;
+  entryKey?: unknown;
+  entryValue?: unknown;
+}
+
+export interface NormalizedEntryPayload {
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  entryKey: string;
+  entryValue: string;
+}
+
+export type EntryValidation =
+  | { ok: false; error: string }
+  | { ok: true; value: NormalizedEntryPayload };
 
 // Every one of these must be present before /api/mail/lookup will call Graph.
 // GRAPH_MAILBOX is the single mailbox the integration is allowed to read; there
 // is deliberately no request parameter that can change it.
-const GRAPH_ENV_KEYS = ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET', 'GRAPH_MAILBOX'];
+const GRAPH_ENV_KEYS = ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET', 'GRAPH_MAILBOX'] as const;
 
-function isGraphConfigured(env) {
+// A type predicate, not a plain boolean: past this check the compiler knows the
+// Graph credentials are strings, which is what makes listCorrespondence
+// uncallable on an unconfigured deployment rather than merely unreached.
+function isGraphConfigured(env: Env): env is Env & GraphEnv {
   return GRAPH_ENV_KEYS.every((key) => Boolean(env[key]));
 }
 
-export function normalizeEntryPayload(payload = {}) {
+/** Same idea for Stripe: narrowing here is what lets lookupStripeRecord require the key. */
+function isStripeConfigured(env: Env): env is Env & StripeEnv {
+  return Boolean(env.STRIPE_SECRET_KEY);
+}
+
+export function normalizeEntryPayload(payload: EntryPayloadInput = {}): NormalizedEntryPayload {
   return {
     stripeCustomerId: String(payload.stripeCustomerId || '').trim(),
     stripeSubscriptionId: String(payload.stripeSubscriptionId || '').trim(),
@@ -485,7 +524,7 @@ export function normalizeEntryPayload(payload = {}) {
   };
 }
 
-export function validateEntryPayload(payload) {
+export function validateEntryPayload(payload: EntryPayloadInput): EntryValidation {
   const { stripeCustomerId, stripeSubscriptionId, entryKey, entryValue } = normalizeEntryPayload(payload);
 
   if (!stripeCustomerId || !stripeSubscriptionId || !entryKey) {
@@ -502,31 +541,37 @@ export function validateEntryPayload(payload) {
   };
 }
 
-function isAuthorized(request, env) {
+function isAuthorized(request: Request, env: Env): boolean {
   const authHeader = request.headers.get('authorization') || '';
   const [scheme, token] = authHeader.split(' ');
   const normalizedScheme = (scheme || '').toLowerCase();
-  return normalizedScheme === 'token' && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN;
+  return Boolean(
+    normalizedScheme === 'token' && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN
+  );
 }
 
-async function readJson(request) {
+async function readJson(request: Request): Promise<EntryPayloadInput | null> {
   try {
-    return await request.json();
+    return await request.json<EntryPayloadInput>();
   } catch {
     return null;
   }
 }
 
-function createEntry(db, entry) {
+function createEntry(db: D1Database, entry: NormalizedEntryPayload): Promise<AdminEntryRow | null> {
   return db.prepare(
     `INSERT INTO subscription_admin_entries
       (stripe_customer_id, stripe_subscription_id, entry_key, entry_value)
      VALUES (?1, ?2, ?3, ?4)
      RETURNING id, stripe_customer_id, stripe_subscription_id, entry_key, entry_value, created_at, updated_at`
-  ).bind(entry.stripeCustomerId, entry.stripeSubscriptionId, entry.entryKey, entry.entryValue).first();
+  ).bind(entry.stripeCustomerId, entry.stripeSubscriptionId, entry.entryKey, entry.entryValue).first<AdminEntryRow>();
 }
 
-function updateEntry(db, id, { entryKey, entryValue }) {
+function updateEntry(
+  db: D1Database,
+  id: number,
+  { entryKey, entryValue }: Pick<NormalizedEntryPayload, 'entryKey' | 'entryValue'>
+): Promise<AdminEntryRow | null> {
   return db.prepare(
     `UPDATE subscription_admin_entries
      SET entry_key = ?1,
@@ -534,32 +579,35 @@ function updateEntry(db, id, { entryKey, entryValue }) {
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ?3
      RETURNING id, stripe_customer_id, stripe_subscription_id, entry_key, entry_value, created_at, updated_at`
-  ).bind(entryKey, entryValue, id).first();
+  ).bind(entryKey, entryValue, id).first<AdminEntryRow>();
 }
 
-function deleteEntry(db, id) {
-  return db.prepare('DELETE FROM subscription_admin_entries WHERE id = ?1 RETURNING id').bind(id).first();
+function deleteEntry(db: D1Database, id: number): Promise<Pick<AdminEntryRow, 'id'> | null> {
+  return db
+    .prepare('DELETE FROM subscription_admin_entries WHERE id = ?1 RETURNING id')
+    .bind(id)
+    .first<Pick<AdminEntryRow, 'id'>>();
 }
 
-function listEntries(db, subscriptionId) {
+function listEntries(db: D1Database, subscriptionId: string): Promise<D1Result<AdminEntryRow>> {
   if (subscriptionId) {
     return db.prepare(
       `SELECT id, stripe_customer_id, stripe_subscription_id, entry_key, entry_value, created_at, updated_at
        FROM subscription_admin_entries
        WHERE stripe_subscription_id = ?1
        ORDER BY created_at DESC`
-    ).bind(subscriptionId).all();
+    ).bind(subscriptionId).all<AdminEntryRow>();
   }
 
   return db.prepare(
     `SELECT id, stripe_customer_id, stripe_subscription_id, entry_key, entry_value, created_at, updated_at
      FROM subscription_admin_entries
      ORDER BY created_at DESC`
-  ).all();
+  ).all<AdminEntryRow>();
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === '/') {
@@ -588,7 +636,7 @@ export default {
       if (!q) {
         return json({ error: 'q is required' }, 400);
       }
-      if (!env.STRIPE_SECRET_KEY) {
+      if (!isStripeConfigured(env)) {
         return json({ error: 'STRIPE_SECRET_KEY is not configured' }, 500);
       }
       try {
@@ -684,4 +732,4 @@ export default {
 
     return json({ error: 'Method not allowed' }, 405);
   },
-};
+} satisfies ExportedHandler<Env>;

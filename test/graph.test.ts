@@ -7,7 +7,7 @@ import {
   shapeMessage,
   listCorrespondence,
   resetTokenCache,
-} from '../src/graph.js';
+} from '../src/graph';
 
 const CLIENT_SECRET = 'super-secret-client-value';
 
@@ -20,14 +20,61 @@ const ENV = {
 
 const originalFetch = globalThis.fetch;
 
-function jsonResponse(body, status = 200) {
+/** The init type `globalThis.fetch` is declared with, so a stub stays assignable to it. */
+type FetchInit = RequestInit<RequestInitCfProperties>;
+
+interface FetchCall {
+  url: URL;
+  init: FetchInit | undefined;
+}
+
+type StubHandler = (url: URL, init: FetchInit | undefined, callNumber: number) => Response;
+
+/** `fetch` may be handed a string, a Request, or a URL; all three reach these stubs. */
+function toUrl(input: RequestInfo | URL): URL {
+  if (typeof input === 'string') return new URL(input);
+  if (input instanceof URL) return input;
+  return new URL(input.url);
+}
+
+/**
+ * `init.headers` is a union of Headers, a record, and iterable pairs, and cannot be
+ * indexed as it stands. The record branch stays an exact, case-sensitive read: the
+ * assertions this feeds replaced a direct `init.headers.Authorization`, and
+ * normalising every branch through `Headers` would quietly start accepting a
+ * differently-cased header name that the old assertion would have failed on.
+ */
+function headerValue(init: FetchInit | undefined, name: string): string | undefined {
+  const headers = init?.headers;
+  if (!headers) return undefined;
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (Symbol.iterator in headers) {
+    for (const pair of headers) {
+      const [key, value] = [...pair];
+      if (key === name) return value;
+    }
+    return undefined;
+  }
+  return headers[name];
+}
+
+/** The token request sends URLSearchParams; narrow to it rather than asserting a type. */
+function formBody(init: FetchInit | undefined): URLSearchParams {
+  const body = init?.body;
+  if (!(body instanceof URLSearchParams)) {
+    throw new Error('expected the token request to send a URLSearchParams body');
+  }
+  return body;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
   });
 }
 
-function tokenResponse(expiresIn = 3600) {
+function tokenResponse(expiresIn = 3600): Response {
   return jsonResponse({ access_token: 'graph-token', token_type: 'Bearer', expires_in: expiresIn });
 }
 
@@ -36,10 +83,13 @@ function tokenResponse(expiresIn = 3600) {
  * token cache changes how many requests a call makes, so index-based assertions
  * would be order-dependent.
  */
-function stubFetch({ token, graph }) {
-  const calls = { token: [], graph: [] };
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(typeof input === 'string' ? input : input.url);
+function stubFetch({ token, graph }: { token?: StubHandler; graph: StubHandler }): {
+  token: FetchCall[];
+  graph: FetchCall[];
+} {
+  const calls: { token: FetchCall[]; graph: FetchCall[] } = { token: [], graph: [] };
+  globalThis.fetch = async (input: RequestInfo | URL, init?: FetchInit) => {
+    const url = toUrl(input);
     if (url.hostname === 'login.microsoftonline.com') {
       calls.token.push({ url, init });
       return token ? token(url, init, calls.token.length) : tokenResponse();
@@ -120,7 +170,7 @@ test('listCorrespondence searches participants in the env mailbox and shapes the
     assert.equal(result.messages[0].subject, 'Refund request');
     assert.ok(!JSON.stringify(result).includes('should not survive'));
     assert.equal(calls.graph.length, 1);
-    assert.equal(calls.graph[0].init.headers.Authorization, 'Bearer graph-token');
+    assert.equal(headerValue(calls.graph[0].init, 'Authorization'), 'Bearer graph-token');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -340,13 +390,14 @@ test('the token request uses the client credentials grant against the configured
   try {
     await getAccessToken(ENV);
     const { url, init } = calls.token[0];
+    const body = formBody(init);
     assert.equal(url.pathname, '/tenant-abc/oauth2/v2.0/token');
-    assert.equal(init.method, 'POST');
-    assert.equal(init.headers['content-type'], 'application/x-www-form-urlencoded');
-    assert.equal(init.body.get('grant_type'), 'client_credentials');
-    assert.equal(init.body.get('scope'), 'https://graph.microsoft.com/.default');
-    assert.equal(init.body.get('client_id'), 'client-abc');
-    assert.equal(init.body.get('client_secret'), CLIENT_SECRET);
+    assert.equal(init?.method, 'POST');
+    assert.equal(headerValue(init, 'content-type'), 'application/x-www-form-urlencoded');
+    assert.equal(body.get('grant_type'), 'client_credentials');
+    assert.equal(body.get('scope'), 'https://graph.microsoft.com/.default');
+    assert.equal(body.get('client_id'), 'client-abc');
+    assert.equal(body.get('client_secret'), CLIENT_SECRET);
   } finally {
     globalThis.fetch = originalFetch;
   }
