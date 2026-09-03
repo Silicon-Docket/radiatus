@@ -543,6 +543,9 @@ test('/api/accounts lists flagged accounts only when the parameter is absent', a
   );
   assert.equal(body.accounts[0].flag_reason, 'refund-mention');
   assert.equal(body.accounts[0].flag_subject, 'refund now');
+  // flag_subject is a support-mail subject copied verbatim — message content,
+  // held to the same rule as /api/mail/lookup rather than left cacheable.
+  assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
 test('/api/accounts?flaggedOnly=false also lists accounts whose flag was cleared', async () => {
@@ -721,6 +724,31 @@ test('the scheduled handler polls Graph and flags when configuration is present'
   }
 });
 
+test('the scheduled handler logs the summary the setup doc tells operators to look for', async () => {
+  // docs/office365-mail-setup.md says to "check the Worker's cron invocation
+  // log" when flags stop appearing. Without this line a successful run writes
+  // nothing, so a poller stalled on its watermark and a quiet mailbox look
+  // identical from the dashboard.
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  resetTokenCache();
+  const { db } = createFakeD1();
+  const logged: string[] = [];
+  console.log = (...args: unknown[]) => {
+    logged.push(args.map(String).join(' '));
+  };
+  stubGraphFetch(() => graphJson({ value: [] }));
+  try {
+    await worker.scheduled(scheduledEvent(), { ...GRAPH_ENV, DB: db }, scheduledContext(() => {}));
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /"fetched":0/);
+    assert.match(logged[0], /"flagged":0/);
+  } finally {
+    console.log = originalLog;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('ADMIN_HTML includes every element id the script depends on', () => {
   for (const id of [
     'token',
@@ -760,6 +788,12 @@ test('the accounts UI defaults to flagged-only and sits above the customer searc
     ADMIN_HTML.indexOf('id="account-search"') < ADMIN_HTML.indexOf('id="search-input"'),
     'the Accounts section belongs above the existing customer search'
   );
+  // The accounts list loads itself on page open, so the likeliest 500 an
+  // operator ever sees here is the accounts table not existing yet. That comes
+  // back as plain text, and an unguarded parse would report it as a JSON
+  // syntax error instead of the missing migration.
+  assert.match(ADMIN_HTML, /migration has been applied/);
+  assert.match(ADMIN_HTML, /response\.json\(\)\.catch\(/);
   // The page is one template literal: a backtick or ${ inside it would end the
   // string or interpolate, so the whole admin page is built with concatenation.
   assert.ok(!ADMIN_HTML.includes('`'));

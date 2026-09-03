@@ -246,7 +246,11 @@ export async function graphRequest<T>(
   }
 
   const response = await fetch(url.toString(), {
-    headers: { Authorization: 'Bearer ' + accessToken, ...extraHeaders },
+    // extraHeaders is spread FIRST so a caller can never displace the token
+    // this module just minted. Spreading it last would make a header map that
+    // happens to carry an Authorization key silently send the wrong credential,
+    // surfacing as a baffling 401 rather than an error at the call site.
+    headers: { ...extraHeaders, Authorization: 'Bearer ' + accessToken },
   });
 
   // Read once, serve both branches: the payload intersected with Graph's error
@@ -359,8 +363,12 @@ export async function listCorrespondence(env: GraphEnv, address: string): Promis
  * `ge`, not `gt`: receivedDateTime has second granularity and a support mailbox
  * does receive two messages in the same second. `gt` against a watermark taken
  * from the last message processed would silently drop the other one. `ge`
- * re-fetches the boundary message instead, and processed_messages skips it —
- * costing one wasted row per run and losing nothing.
+ * re-fetches the boundary message instead, and processed_messages skips it.
+ *
+ * `ge` alone only makes same-second ties safe, though — it does NOT protect a
+ * message that becomes visible after a newer one was already processed. That
+ * case is handled by the caller: pollAndFlag subtracts an overlap window from
+ * the watermark before calling in. See WATERMARK_OVERLAP_MS in flagging.ts.
  */
 export async function listRecentMessages(
   env: GraphEnv,

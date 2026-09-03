@@ -165,6 +165,30 @@ test('pollAndFlag lowercases the sender address before it becomes an account key
   assert.deepEqual([...accounts.keys()], ['ada@example.com']);
 });
 
+test('the Stripe lookup gets the address as sent, not the lowercased account key', async () => {
+  // findCustomerByEmail tries the address as given and only then its lowercase
+  // form, because Stripe's /customers?email= filter is exact and
+  // case-sensitive. Handing it the already-lowercased key collapses those two
+  // candidates into one, so a customer stored in Stripe as Ada@Example.com is
+  // never resolved — and never will be, since COALESCE only fills a null and
+  // every later poll repeats the same failing query.
+  const { db, accounts } = createFakeD1();
+  const asked: string[] = [];
+  await pollAndFlag(
+    pollEnv(db),
+    pollDeps([message({ from: { name: 'Ada', address: '  Ada@Example.COM ' } })], {
+      lookupCustomer: async (env, email) => {
+        asked.push(email);
+        return customer('cus_123');
+      },
+    })
+  );
+
+  assert.deepEqual(asked, ['Ada@Example.COM'], 'trimmed, but the casing must survive');
+  assert.deepEqual([...accounts.keys()], ['ada@example.com'], 'the row is still keyed lowercase');
+  assert.equal(accounts.get('ada@example.com')?.stripe_customer_id, 'cus_123');
+});
+
 test('pollAndFlag does not flag a message that is already in processed_messages', async () => {
   const { db, accounts } = createFakeD1({
     processedMessages: [{ message_id: 'AAMkAD_1', received_at: '2026-08-30T10:15:00Z' }],
@@ -327,7 +351,9 @@ test('the first poll looks back 24 hours; later polls resume from the last messa
   assert.equal(asked[0], '2026-08-29T12:00:00.000Z', 'no watermark yet: 24h before now, not the whole mailbox');
 
   await pollAndFlag(pollEnv(fake.db), deps);
-  assert.equal(asked[1], '2026-08-30T10:15:00Z', 'the watermark is the newest received_at recorded');
+  // The newest received_at recorded (10:15:00), less the 10-minute overlap the
+  // poll re-reads so a late-appearing older message is not lost.
+  assert.equal(asked[1], '2026-08-30T10:05:00.000Z', 'resumes from the watermark, minus the overlap');
 });
 
 test('the watermark is the newest received_at, not the last row written', async () => {
@@ -350,7 +376,43 @@ test('the watermark is the newest received_at, not the last row written', async 
     })
   );
 
-  assert.deepEqual(asked, ['2026-08-30T11:00:00Z']);
+  // 11:00:00 is the newest received_at of the three, not the last one written
+  // (10:00:00); the overlap window then steps back from it.
+  assert.deepEqual(asked, ['2026-08-30T10:50:00.000Z']);
+});
+
+test('a message that becomes visible after a newer one was processed is still picked up', async () => {
+  // Exchange's index can surface a 10:15:03 message before a 10:14:58 one, and
+  // a message released from quarantine or moved into the Inbox keeps its
+  // original receivedDateTime. A bare `ge watermark` would exclude the older
+  // message forever; the overlap window is what re-covers it.
+  const fake = createFakeD1();
+  const early = message({ id: 'visible-first', receivedDateTime: '2026-08-30T10:15:03Z', subject: 'refund now' });
+  const late = message({ id: 'visible-later', receivedDateTime: '2026-08-30T10:14:58Z', subject: 'refund, delayed' });
+
+  await pollAndFlag(pollEnv(fake.db), pollDeps([early]));
+  assert.equal(fake.processedMessages.size, 1);
+
+  const asked: string[] = [];
+  const summary = await pollAndFlag(
+    pollEnv(fake.db),
+    pollDeps([], {
+      // Stands in for Graph's own `receivedDateTime ge <since>` filter, so the
+      // assertion depends on the window actually reaching back far enough.
+      listMessages: async (env, since) => {
+        asked.push(since);
+        return new Date(late.receivedDateTime!).getTime() >= new Date(since).getTime() ? [late] : [];
+      },
+    })
+  );
+
+  assert.equal(summary.flagged, 1, 'the late-visible message must still be evaluated');
+  assert.equal(
+    fake.accounts.get('ada@example.com')?.flag_subject,
+    'refund, delayed',
+    'without the overlap this message is never seen by any rule'
+  );
+  assert.ok(new Date(asked[0]).getTime() < new Date('2026-08-30T10:14:58Z').getTime());
 });
 
 test('pollAndFlag reads the mailbox from env and never binds unparameterised SQL', async () => {

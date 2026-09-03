@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   GraphApiError,
   getAccessToken,
+  graphRequest,
   shapeMessage,
   listCorrespondence,
   listRecentMessages,
@@ -512,6 +513,27 @@ test('listRecentMessages reads only env.GRAPH_MAILBOX and refuses to run without
       /GRAPH_MAILBOX is required/,
     );
     assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an extra header can never displace the bearer token graphRequest just minted', async () => {
+  resetTokenCache();
+  // Only listRecentMessages passes extraHeaders today, and it passes Prefer.
+  // The guard is for the next caller: a header map that happens to carry an
+  // Authorization key would otherwise send the wrong credential and surface as
+  // a baffling 401 rather than an error where the mistake was made.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await graphRequest(
+      ENV,
+      '/users/support%40example.com/messages',
+      {},
+      { Authorization: 'Bearer not-the-real-token', Prefer: 'IdType="ImmutableId"' }
+    );
+    assert.equal(headerValue(calls.graph[0].init, 'Authorization'), 'Bearer graph-token');
+    assert.equal(headerValue(calls.graph[0].init, 'Prefer'), 'IdType="ImmutableId"');
   } finally {
     globalThis.fetch = originalFetch;
   }

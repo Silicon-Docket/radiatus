@@ -272,9 +272,19 @@ export const ADMIN_HTML = `<!doctype html>
             accountsStatus.textContent = 'Paste your admin API token above to load flagged accounts.';
             return;
           }
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data.error || 'Failed to load accounts');
+          // Not every failure here is JSON. An unhandled exception in the
+          // Worker — overwhelmingly likely to be "no such table: accounts"
+          // because the migration has not been applied yet — comes back as a
+          // plain-text 500, and this list loads itself on page open, so an
+          // unguarded parse would greet the operator with a JSON syntax error
+          // instead of the actual problem.
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data) {
+            throw new Error(
+              (data && data.error) ||
+                'Failed to load accounts (HTTP ' + response.status + '). If this deployment was ' +
+                'just upgraded, check that the database migration has been applied — see the README.'
+            );
           }
           accountsBody.innerHTML = '';
           for (const account of data.accounts) {
@@ -911,7 +921,9 @@ export default {
       }
       const flaggedOnly = parseFlaggedOnly(url.searchParams.get('flaggedOnly'));
       const result = await listAccounts(env.DB, { q, flaggedOnly });
-      return json({ accounts: result.results || [], flaggedOnly });
+      // no-store for the same reason /api/mail/lookup sets it: flag_subject is
+      // a support-mail subject line copied verbatim, which is message content.
+      return json({ accounts: result.results || [], flaggedOnly }, 200, { 'cache-control': 'no-store' });
     }
 
     if (url.pathname === '/api/accounts/resolve' && request.method === 'POST') {
@@ -998,6 +1010,10 @@ export default {
     // rather than a dropped promise; waitUntil registers the same work with the
     // runtime so completion never depends on how the return value is treated.
     ctx.waitUntil(run);
-    await run;
+    // The one line docs/office365-mail-setup.md's "check the Worker's cron
+    // invocation log" instruction depends on. Without it a successful run
+    // writes nothing at all, so a poller stalled on a watermark and a genuinely
+    // quiet mailbox are indistinguishable from the outside.
+    console.log('auto-flagging poll: ' + JSON.stringify(await run));
   },
 } satisfies ExportedHandler<Env>;

@@ -12,6 +12,22 @@ import { isStripeConfigured, type Env } from './types';
 const INITIAL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * How far back behind the watermark each poll re-reads.
+ *
+ * `receivedDateTime ge watermark` on its own is only safe against same-second
+ * ties. It is NOT safe against a message that becomes visible late: Exchange's
+ * index can surface a 10:15:03 message before a 10:14:58 one, and a message
+ * released from quarantine or moved into the Inbox keeps its original
+ * receivedDateTime. In every one of those cases the watermark has already
+ * advanced past the message and `ge` excludes it forever — a customer's mail
+ * silently never evaluated by any rule.
+ *
+ * Re-reading a window behind the watermark covers that, and costs nothing but a
+ * slightly larger batch: processed_messages skips everything already handled.
+ */
+const WATERMARK_OVERLAP_MS = 10 * 60 * 1000;
+
+/**
  * What a poll needs: D1, plus Graph credentials the caller has already checked.
  * `Env & GraphEnv` is exactly what `isGraphConfigured` narrows to, so the
  * scheduled handler cannot reach this function without them.
@@ -124,6 +140,19 @@ function upsertFlaggedAccount(
 }
 
 /**
+ * Steps back from the watermark by the overlap window.
+ *
+ * An unparseable watermark is returned unchanged rather than quietly widened to
+ * the initial lookback: listRecentMessages rejects it loudly, which is what a
+ * corrupt cursor deserves.
+ */
+function overlapBefore(watermark: string): string {
+  const parsed = new Date(watermark);
+  if (Number.isNaN(parsed.getTime())) return watermark;
+  return new Date(parsed.getTime() - WATERMARK_OVERLAP_MS).toISOString();
+}
+
+/**
  * One polling pass: fetch what is new, flag what matches, remember what was
  * seen. Called by the Worker's scheduled handler, which has already checked
  * that Graph is configured.
@@ -138,7 +167,10 @@ export async function pollAndFlag(env: PollEnv, deps: PollDeps = {}): Promise<Po
 
   const db = env.DB;
   const watermarkRow = await readWatermark(db);
-  const since = watermarkRow?.watermark || new Date(now().getTime() - INITIAL_LOOKBACK_MS).toISOString();
+  const watermark = watermarkRow?.watermark;
+  const since = watermark
+    ? overlapBefore(watermark)
+    : new Date(now().getTime() - INITIAL_LOOKBACK_MS).toISOString();
 
   const messages = await listMessages(env, since);
   const summary: PollSummary = { fetched: messages.length, skipped: 0, processed: 0, flagged: 0 };
@@ -156,7 +188,20 @@ export async function pollAndFlag(env: PollEnv, deps: PollDeps = {}): Promise<Po
     }
 
     const rule = evaluateRules(message, rules);
-    const sender = (message.from?.address || '').trim().toLowerCase();
+    // Two forms of the same address, for two different consumers.
+    //
+    // `sender` is the accounts key, lowercased because SQLite compares text
+    // case-sensitively and Ada@Example.com must not become a second account.
+    //
+    // `senderAddress` keeps the casing Graph reported, because that is what
+    // Stripe needs: `GET /customers?email=` is an exact, case-sensitive filter,
+    // and findCustomerByEmail recovers from that by trying the address as given
+    // and only then its lowercase form. Handing it the key collapses those two
+    // candidates into one and misses every customer whose Stripe email carries
+    // a capital — permanently, since COALESCE only ever fills a null and each
+    // later poll would repeat the identical failing query.
+    const senderAddress = (message.from?.address || '').trim();
+    const sender = senderAddress.toLowerCase();
 
     // Never flag the support mailbox on its own outgoing mail. listRecentMessages
     // already scopes to the Inbox, which should keep Sent Items out — but that
@@ -175,7 +220,7 @@ export async function pollAndFlag(env: PollEnv, deps: PollDeps = {}): Promise<Po
       // is also what narrows `env` to something lookupCustomer will accept.
       if (isStripeConfigured(env)) {
         try {
-          const customer = await lookupCustomer(env, sender);
+          const customer = await lookupCustomer(env, senderAddress);
           stripeCustomerId = customer?.id || null;
         } catch {
           // Stripe being down must not abort the poll or lose the flag. Record

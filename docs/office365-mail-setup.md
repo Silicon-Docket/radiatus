@@ -197,10 +197,20 @@ shipping it enabled is safe. Change the expression if every 15 minutes is the
 wrong cadence; delete the `[triggers]` block if you want no schedule at all.
 
 Each run reads the watermark (the newest `received_at` in `processed_messages`),
-asks Graph for messages at or after it, evaluates the rules against each one,
-and records every message it examined. The first run on a fresh database looks
-back 24 hours — a new deployment should start flagging what arrives from now
-on, not manufacture a queue out of a year of mailbox history.
+asks Graph for messages from shortly before it onwards, evaluates the rules
+against each one, and records every message it examined. The first run on a
+fresh database looks back 24 hours — a new deployment should start flagging
+what arrives from now on, not manufacture a queue out of a year of mailbox
+history.
+
+The poll deliberately re-reads a **10-minute overlap** behind the watermark.
+Exchange's index does not always surface messages in `receivedDateTime` order,
+and a message released from quarantine or moved into the Inbox keeps its
+original timestamp — so a strict "newer than the watermark" query would skip
+those permanently and silently. Re-reading the window costs nothing but a
+slightly larger batch, because `processed_messages` skips whatever was already
+handled. Widen `WATERMARK_OVERLAP_MS` in `src/flagging.ts` if your tenant's
+indexing runs further behind than that.
 
 **Flags do not come back once cleared** — provided Graph honours the immutable
 ID request. Idempotency is by Graph message ID: a message already in
