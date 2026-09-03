@@ -2,16 +2,25 @@
 
 This is an **optional** feature. Radiatus runs fine without it: leave the four
 `GRAPH_*` variables blank and `/api/mail/lookup` answers `501 Not Implemented`,
-which the admin page renders as a plain "not configured" note. Nothing else in
-the template changes. It is deliberately kept out of [Quick start](../README.md#quick-start).
+which the admin page renders as a plain "not configured" note, while the
+auto-flagging cron fires on schedule and returns immediately without doing
+anything. Nothing else in the template changes. It is deliberately kept out of
+[Quick start](../README.md#quick-start).
 
 ## What it does
 
-On the customer view in `/admin`, a **Correspondence** panel with a
-**Load correspondence** button. Clicking it lists message *metadata* — received
-date, sender, subject, attachment flag — from one shared mailbox, searched for
-messages involving the customer's email address. Each row links out to the
-message's Outlook `webLink`.
+Two things, both from the same four variables.
+
+**The correspondence panel.** On the customer view in `/admin`, a
+**Correspondence** panel with a **Load correspondence** button. Clicking it
+lists message *metadata* — received date, sender, subject, attachment flag —
+from one shared mailbox, searched for messages involving the customer's email
+address. Each row links out to the message's Outlook `webLink`.
+
+**Auto-flagging.** A [Cron Trigger](#auto-flagging-and-the-cron-trigger) polls
+the same mailbox every 15 minutes and flags the accounts of people who wrote in,
+according to rules you edit in `src/flag-rules.ts`. The **Accounts** table at
+the top of `/admin` is that queue.
 
 Read "searched for" literally rather than as a security boundary. The address
 becomes a term in a Graph KQL `$search` query, and only quote characters are
@@ -30,6 +39,8 @@ excluded by the Exchange grant rather than by our filtering.
   same short list. But the real guarantee is the Exchange grant below: the
   `Application Mail.ReadBasic` role does not include message content at all, so
   a leaked `ADMIN_API_TOKEN` still cannot pull mail bodies through this route.
+  This applies to the flag rules too — they match on subject and sender only,
+  and [cannot be given body text](#rules-see-the-subject-and-sender-only-never-the-body).
 - **One mailbox, from configuration only.** The mailbox comes from
   `GRAPH_MAILBOX`. No request parameter influences it. That is the difference
   between "look up correspondence with a customer" and "browse any mailbox in
@@ -169,10 +180,94 @@ npx wrangler secret put GRAPH_MAILBOX
 
 Then search a customer in `/admin` and click **Load correspondence**.
 
+## Auto-flagging and the cron trigger
+
+`wrangler.toml` declares a schedule:
+
+```toml
+[triggers]
+crons = ["*/15 * * * *"]
+```
+
+It is already there and you do not need to add it. The Worker's `scheduled`
+handler checks for the four `GRAPH_*` variables first and returns immediately
+when any is missing, so on a deployment that never enabled this feature the
+cron fires, does nothing, touches no database, and costs nothing. That is why
+shipping it enabled is safe. Change the expression if every 15 minutes is the
+wrong cadence; delete the `[triggers]` block if you want no schedule at all.
+
+Each run reads the watermark (the newest `received_at` in `processed_messages`),
+asks Graph for messages from shortly before it onwards, evaluates the rules
+against each one, and records every message it examined. The first run on a
+fresh database looks back 24 hours — a new deployment should start flagging
+what arrives from now on, not manufacture a queue out of a year of mailbox
+history.
+
+The poll deliberately re-reads a **10-minute overlap** behind the watermark.
+Exchange's index does not always surface messages in `receivedDateTime` order,
+and a message released from quarantine or moved into the Inbox keeps its
+original timestamp — so a strict "newer than the watermark" query would skip
+those permanently and silently. Re-reading the window costs nothing but a
+slightly larger batch, because `processed_messages` skips whatever was already
+handled. Widen `WATERMARK_OVERLAP_MS` in `src/flagging.ts` if your tenant's
+indexing runs further behind than that.
+
+**Flags do not come back once cleared** — provided Graph honours the immutable
+ID request. Idempotency is by Graph message ID: a message already in
+`processed_messages` is skipped entirely, so a retried, overlapping, or re-run
+poll cannot re-raise a flag an operator just resolved.
+
+There is a wrinkle worth knowing, because it bites the natural operator
+workflow. Graph message IDs are **not stable by default** — filing a message
+into a folder reassigns the ID, which would make the same message look new and
+re-raise the flag you just cleared. The poll therefore sends
+`Prefer: IdType="ImmutableId"`. **This is one of the unverified items below**:
+if your tenant does not honour it, the symptom is a flag reappearing after an
+agent handles a ticket, clears it, and files the mail — all within one 15-minute
+tick. If you see that, say so in an issue; the fallback is to key idempotency on
+`internetMessageId` instead.
+
+Separately, the poll reads **the Inbox only**, not the whole mailbox, so the
+team's own replies from Sent Items do not flag the support mailbox as a
+customer account. A second guard in `src/flagging.ts` skips any message whose
+sender is `GRAPH_MAILBOX` itself, so that failure cannot occur even if the
+folder scoping is refused.
+(For the same reason, `processed_messages` must never be pruned — it holds the
+watermark as well as the idempotency keys. The comment on the table in
+`db/schema.ts` explains what breaks if you do.)
+
+### Rules see the SUBJECT and SENDER only. Never the body.
+
+> A flag rule receives the shaped metadata object — `subject`, `from`,
+> `toRecipients`, `receivedDateTime`. **There is no message body in it, and
+> there is no setting that adds one.**
+
+This is deliberate, and it is the same decision as Step 2 above wearing a
+different hat. Message content is excluded **at the Exchange grant**: the
+`Application Mail.ReadBasic` role does not include bodies, so they never reach
+the Worker to be matched against. Making body text available to rules would
+mean asking for `Application Mail.Read` — and at that point a leaked
+`ADMIN_API_TOKEN` could pull the full contents of every message in the mailbox
+through this deployment.
+
+Automatic flagging is not worth that trade. A rule that needs body text cannot
+be expressed here, by design: the `ShapedMessage` type a rule is handed declares
+no such field, so the rule does not compile. The honest workaround is a narrower
+subject rule plus a human reading the message in Outlook — not a wider grant.
+
+`src/flag-rules.ts` ships with exactly one rule, marked as an example to
+replace: subject matching `/\brefund\b/i`. That pattern matches the standalone
+word only — **not** "refunds", "refunded", or "non-refundable" — which is a
+documented choice, explained in the file along with how to widen it. Exporting
+an empty `FLAG_RULES` array turns flagging off while leaving the poll harmless.
+A rule that throws is caught and skipped so one bad regex cannot stop the run,
+which also means a broken rule fails silently: test yours.
+
 ## What this integration has NOT verified against a live tenant
 
-All three are honest unknowns. Treat the first as a risk to your setup time and
-the other two as risks to what the panel can show you.
+All five are honest unknowns. Treat the first as a risk to your setup time,
+the next two as risks to what the panel can show you, and the last two as risks
+to how the flag queue behaves in daily use.
 
 1. **Whether a client-credentials token with zero Entra `Mail.*` consent is
    accepted at all.** Microsoft's RBAC-for-Applications documentation implies
@@ -194,6 +289,21 @@ the other two as risks to what the panel can show you.
    with "the restriction or sort order is too complex to perform". If that
    happens, the fallback has nothing further to fall back to and the panel
    reports a Graph error. Nothing else in the deployment is affected.
+4. **Whether `Prefer: IdType="ImmutableId"` is honoured on the poll.** If it is
+   not, message IDs revert to changing when mail is filed into a folder, and a
+   flag can reappear after an agent handles the ticket, clears it, and files the
+   message — the exact sequence a tidy operator performs. Symptom: a flag you
+   just cleared is back within a tick, on the same subject. Fallback: key
+   `processed_messages` on `internetMessageId`, which is stable and included
+   under `Mail.ReadBasic`.
+5. **Whether `/mailFolders/inbox/messages` is permitted under the scoped
+   grant.** The poll reads the Inbox rather than the whole mailbox so the team's
+   own replies do not flag the support mailbox as a customer. If that path is
+   refused the poll errors every 15 minutes, visible only in the Cloudflare cron
+   log. Note the self-flag failure itself is guarded independently in
+   `src/flagging.ts`, so a fallback to the mailbox-wide path would still not
+   flag the mailbox against itself — it would only widen what the poller reads
+   to include Sent and Deleted items.
 
 Note also that in `search` mode Graph orders results by relevance, and `$search`
 cannot be combined with `$orderby` on messages — so the 25 messages listed are
@@ -210,8 +320,13 @@ not necessarily the 25 most recent. The panel says so above the table.
   enabled by default only on E3/E5 licences. If you cannot live with that,
   do not enable this feature — or put `/admin` behind Cloudflare Access first.
 - **Turning it off** is removing the variables (`wrangler secret delete
-  GRAPH_CLIENT_SECRET`, etc.). Remove the RBAC assignment too if you are done
-  with it: `Remove-ManagementRoleAssignment`.
+  GRAPH_CLIENT_SECRET`, etc.). Both the panel and auto-flagging go inert
+  together; the cron keeps firing and keeps doing nothing. Remove the RBAC
+  assignment too if you are done with it: `Remove-ManagementRoleAssignment`.
+- **Auto-flagging runs unattended and logs nothing an operator reads.** A rule
+  that throws is skipped silently and a poll that fails is a failed cron
+  invocation in the Cloudflare dashboard, nowhere else. If flags stop appearing,
+  check the Worker's cron invocation log before assuming the mailbox is quiet.
 
 ## Background
 

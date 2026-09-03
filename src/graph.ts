@@ -21,6 +21,11 @@ const MESSAGE_FIELDS = [
 
 const MESSAGE_LIMIT = 25;
 
+// One poll's worth of backlog. A run that hits this ceiling simply leaves the
+// remainder for the next tick: the watermark only advances past messages that
+// were actually recorded, so nothing is skipped, it just arrives a cron later.
+const POLL_LIMIT = 50;
+
 /**
  * The bindings this client needs. The three app-registration values are
  * required — the worker narrows `Env` through `isGraphConfigured` before it can
@@ -227,7 +232,12 @@ export async function getAccessToken(env: GraphEnv): Promise<string> {
   return token.accessToken;
 }
 
-export async function graphRequest<T>(env: GraphEnv, path: string, params: GraphParams = {}): Promise<T> {
+export async function graphRequest<T>(
+  env: GraphEnv,
+  path: string,
+  params: GraphParams = {},
+  extraHeaders: Record<string, string> = {}
+): Promise<T> {
   const accessToken = await getAccessToken(env);
   const url = new URL(GRAPH_API_BASE + path);
   for (const [key, value] of Object.entries(params)) {
@@ -236,7 +246,11 @@ export async function graphRequest<T>(env: GraphEnv, path: string, params: Graph
   }
 
   const response = await fetch(url.toString(), {
-    headers: { Authorization: 'Bearer ' + accessToken },
+    // extraHeaders is spread FIRST so a caller can never displace the token
+    // this module just minted. Spreading it last would make a header map that
+    // happens to carry an Authorization key silently send the wrong credential,
+    // surfacing as a baffling 401 rather than an error at the call site.
+    headers: { ...extraHeaders, Authorization: 'Bearer ' + accessToken },
   });
 
   // Read once, serve both branches: the payload intersected with Graph's error
@@ -336,4 +350,69 @@ export async function listCorrespondence(env: GraphEnv, address: string): Promis
     $top: MESSAGE_LIMIT,
   });
   return { messages: (filtered.value || []).map(shapeMessage), mode: 'sender-only' };
+}
+
+/**
+ * Lists message metadata received at or after `sinceIso`, oldest first, from the
+ * env.GRAPH_MAILBOX mailbox. This is the auto-flagging poller's view of the
+ * mailbox; listCorrespondence() above is the operator's per-customer view. They
+ * are separate exports because they ask different questions — but they share
+ * graphRequest, MESSAGE_FIELDS and shapeMessage, so the metadata-only whitelist
+ * is enforced in exactly one place for both.
+ *
+ * `ge`, not `gt`: receivedDateTime has second granularity and a support mailbox
+ * does receive two messages in the same second. `gt` against a watermark taken
+ * from the last message processed would silently drop the other one. `ge`
+ * re-fetches the boundary message instead, and processed_messages skips it.
+ *
+ * `ge` alone only makes same-second ties safe, though — it does NOT protect a
+ * message that becomes visible after a newer one was already processed. That
+ * case is handled by the caller: pollAndFlag subtracts an overlap window from
+ * the watermark before calling in. See WATERMARK_OVERLAP_MS in flagging.ts.
+ */
+export async function listRecentMessages(
+  env: GraphEnv,
+  sinceIso: string,
+  limit: number = POLL_LIMIT
+): Promise<ShapedMessage[]> {
+  if (!env.GRAPH_MAILBOX) throw new Error('GRAPH_MAILBOX is required');
+
+  // The string check is not redundant with the declared parameter type: the
+  // watermark this receives comes out of D1 as `unknown`-shaped row data, and
+  // `new Date(null)` is not an invalid date — it is midnight 1970, so a null
+  // slipping past the type would ask Graph for the mailbox's entire history
+  // rather than throwing.
+  if (typeof sinceIso !== 'string' || !sinceIso.trim()) throw new Error('sinceIso must be a valid date');
+  // Round-tripping through Date does two jobs: it rejects a malformed watermark
+  // before it reaches Graph, and it means nothing but a canonical ISO timestamp
+  // can ever be concatenated into $filter.
+  const since = new Date(sinceIso);
+  if (Number.isNaN(since.getTime())) throw new Error('sinceIso must be a valid date');
+
+  // Inbox only, unlike listCorrespondence which reads the whole mailbox on
+  // purpose (an operator wants both sides of a thread). The poller must not:
+  // /users/{id}/messages spans Sent Items, so the team's own "Re: refund
+  // request" reply is a message whose sender is the support mailbox, and every
+  // answered thread would permanently self-flag the mailbox to the top of the
+  // queue. Deleted Items is excluded for the same reason — deleting mail should
+  // stop it flagging.
+  const path = '/users/' + encodeURIComponent(env.GRAPH_MAILBOX) + '/mailFolders/inbox/messages';
+  const result = await graphRequest<GraphMessageList>(
+    env,
+    path,
+    {
+      $filter: 'receivedDateTime ge ' + since.toISOString(),
+      // Same property as the filter, so this is not the cross-property sort that
+      // Exchange rejects as "too complex" (see docs/office365-mail-setup.md).
+      $orderby: 'receivedDateTime asc',
+      $select: MESSAGE_FIELDS,
+      $top: limit,
+    },
+    // Graph message ids are NOT stable by default — filing a message into a
+    // folder reassigns its id. Idempotency here is keyed on that id, so without
+    // this header an operator who clears a flag and then files the mail gets the
+    // flag raised again on the next poll. This asks for the immutable form.
+    { Prefer: 'IdType="ImmutableId"' }
+  );
+  return (result.value || []).map(shapeMessage);
 }

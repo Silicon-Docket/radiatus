@@ -4,8 +4,10 @@ import assert from 'node:assert/strict';
 import {
   GraphApiError,
   getAccessToken,
+  graphRequest,
   shapeMessage,
   listCorrespondence,
+  listRecentMessages,
   resetTokenCache,
 } from '../src/graph';
 
@@ -398,6 +400,140 @@ test('the token request uses the client credentials grant against the configured
     assert.equal(body.get('scope'), 'https://graph.microsoft.com/.default');
     assert.equal(body.get('client_id'), 'client-abc');
     assert.equal(body.get('client_secret'), CLIENT_SECRET);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages polls the env mailbox from the watermark, oldest first', async () => {
+  resetTokenCache();
+  const calls = stubFetch({
+    graph: (url) => {
+      // Inbox only. /users/{id}/messages spans Sent Items, so the team's own
+      // replies would flag the support mailbox as an account on every thread.
+      assert.equal(url.pathname, '/v1.0/users/support%40example.com/mailFolders/inbox/messages');
+      // `ge`, not `gt`: receivedDateTime is second-granularity, so a strict
+      // comparison would drop a message sharing the boundary second. The
+      // re-fetched boundary message is skipped by processed_messages instead.
+      assert.equal(url.searchParams.get('$filter'), 'receivedDateTime ge 2026-08-30T10:15:00.000Z');
+      assert.equal(url.searchParams.get('$orderby'), 'receivedDateTime asc');
+      // The same whitelist as every other call — no body, no bodyPreview.
+      assert.equal(
+        url.searchParams.get('$select'),
+        'id,subject,from,toRecipients,receivedDateTime,webLink,conversationId,hasAttachments',
+      );
+      assert.equal(url.searchParams.get('$top'), '50');
+      assert.equal(url.searchParams.get('$search'), null);
+      return jsonResponse({ value: [{ ...MESSAGE_FROM_GRAPH, bodyPreview: 'PRIVATE BODY TEXT' }] });
+    },
+  });
+  try {
+    const messages = await listRecentMessages(ENV, '2026-08-30T10:15:00Z');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].subject, 'Refund request');
+    assert.deepEqual(messages[0].from, { name: 'Person Example', address: 'person@example.com' });
+    assert.ok(!JSON.stringify(messages).includes('PRIVATE BODY TEXT'), 'the poller sees metadata only');
+    assert.equal(calls.graph.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages asks for immutable ids so a filed message keeps its idempotency key', async () => {
+  resetTokenCache();
+  // Graph message ids are not stable by default: filing a message into a folder
+  // reassigns the id. Idempotency is keyed on that id, so without this header an
+  // operator who clears a flag and then files the mail gets it flagged again on
+  // the next poll — which the README explicitly promises cannot happen.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await listRecentMessages(ENV, '2026-08-30T10:15:00Z');
+    assert.equal(headerValue(calls.graph[0].init, 'Prefer'), 'IdType="ImmutableId"');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listCorrespondence still reads the whole mailbox, not just the inbox', async () => {
+  resetTokenCache();
+  // The poller is inbox-scoped on purpose; the correspondence panel must not be.
+  // An operator looking at a customer wants both sides of the thread, so Sent
+  // Items has to stay in scope here.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await listCorrespondence(ENV, 'person@example.com');
+    assert.equal(calls.graph[0].url.pathname, '/v1.0/users/support%40example.com/messages');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages honours an explicit limit and tolerates an empty mailbox', async () => {
+  resetTokenCache();
+  const calls = stubFetch({ graph: () => jsonResponse({}) });
+  try {
+    assert.deepEqual(await listRecentMessages(ENV, '2026-08-30T10:15:00Z', 5), []);
+    assert.equal(calls.graph[0].url.searchParams.get('$top'), '5');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages rejects a watermark that is not a date, before calling Graph', async () => {
+  resetTokenCache();
+  let fetched = false;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return jsonResponse({ value: [] });
+  };
+  try {
+    // Only a canonical ISO timestamp can ever be concatenated into $filter. The
+    // casts are the point of the test: the watermark reaches this function from
+    // a D1 row, so the declared `string` is a claim the runtime must not trust.
+    const notDates = ["2026-01-01' or startswith(subject,'a", 'not-a-date', '', null, undefined];
+    for (const bad of notDates) {
+      await assert.rejects(() => listRecentMessages(ENV, bad as unknown as string), /sinceIso must be a valid date/);
+    }
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listRecentMessages reads only env.GRAPH_MAILBOX and refuses to run without it', async () => {
+  resetTokenCache();
+  let fetched = false;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return jsonResponse({ value: [] });
+  };
+  try {
+    await assert.rejects(
+      () => listRecentMessages({ ...ENV, GRAPH_MAILBOX: undefined }, '2026-08-30T10:15:00Z'),
+      /GRAPH_MAILBOX is required/,
+    );
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an extra header can never displace the bearer token graphRequest just minted', async () => {
+  resetTokenCache();
+  // Only listRecentMessages passes extraHeaders today, and it passes Prefer.
+  // The guard is for the next caller: a header map that happens to carry an
+  // Authorization key would otherwise send the wrong credential and surface as
+  // a baffling 401 rather than an error where the mistake was made.
+  const calls = stubFetch({ graph: () => jsonResponse({ value: [] }) });
+  try {
+    await graphRequest(
+      ENV,
+      '/users/support%40example.com/messages',
+      {},
+      { Authorization: 'Bearer not-the-real-token', Prefer: 'IdType="ImmutableId"' }
+    );
+    assert.equal(headerValue(calls.graph[0].init, 'Authorization'), 'Bearer graph-token');
+    assert.equal(headerValue(calls.graph[0].init, 'Prefer'), 'IdType="ImmutableId"');
   } finally {
     globalThis.fetch = originalFetch;
   }
