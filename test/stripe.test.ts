@@ -147,9 +147,8 @@ test('shapeSubscription trims a Stripe subscription to the fields the UI needs',
   const shaped = shapeSubscription({
     id: 'sub_1',
     status: 'active',
-    current_period_start: 1000,
-    current_period_end: 2000,
     cancel_at_period_end: false,
+    items: { data: [{ current_period_start: 1000, current_period_end: 2000 }] },
     latest_invoice: 'in_should_be_dropped',
   });
   assert.deepEqual(shaped, {
@@ -223,8 +222,7 @@ test('lookupStripeRecord assembles customer, subscriptions, invoices, and paymen
             {
               id: 'sub_1',
               status: 'active',
-              current_period_start: 1,
-              current_period_end: 2,
+              items: { data: [{ current_period_start: 1, current_period_end: 2 }] },
               cancel_at_period_end: false,
             },
           ],
@@ -342,8 +340,7 @@ test('lookupStripeRecord handles subscription-ID lookup by fetching subscription
           id: 'sub_1',
           status: 'active',
           customer: 'cus_2',
-          current_period_start: 100,
-          current_period_end: 200,
+          items: { data: [{ current_period_start: 100, current_period_end: 200 }] },
           cancel_at_period_end: false,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -362,7 +359,16 @@ test('lookupStripeRecord handles subscription-ID lookup by fetching subscription
     }
     if (pathname === '/v1/subscriptions') {
       return new Response(
-        JSON.stringify({ data: [{ id: 'sub_1', status: 'active', current_period_start: 100, current_period_end: 200, cancel_at_period_end: false }] }),
+        JSON.stringify({
+          data: [
+            {
+              id: 'sub_1',
+              status: 'active',
+              items: { data: [{ current_period_start: 100, current_period_end: 200 }] },
+              cancel_at_period_end: false,
+            },
+          ],
+        }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
@@ -388,27 +394,78 @@ test('lookupStripeRecord handles subscription-ID lookup by fetching subscription
   }
 });
 
-test('shapeSubscription handles Basil API version with period fields in items[0]', () => {
-  const basilShaped = shapeSubscription({
+/**
+ * Basil removed the subscription-level billing period and moved it onto the
+ * items, and every request this client makes pins a version past that release , 
+ * so the item shape is the only one that can arrive and reading a top-level
+ * fallback beside it would be a second path for a response Stripe no longer
+ * sends. These two pin that: the pair below is ignored, and a subscription with
+ * no items degrades to undefined rather than throwing on an operator's lookup.
+ *
+ * @see https://docs.stripe.com/changelog/basil/2025-03-31/deprecate-subscription-current-period-start-and-end
+ */
+test('shapeSubscription ignores a pre-Basil subscription-level period', () => {
+  const shaped = shapeSubscription({
     id: 'sub_1',
     status: 'active',
     cancel_at_period_end: false,
-    items: {
-      data: [
-        {
-          current_period_start: 3000,
-          current_period_end: 4000,
-        },
-      ],
-    },
+    current_period_start: 3000,
+    current_period_end: 4000,
   });
-  assert.deepEqual(basilShaped, {
+  assert.deepEqual(shaped, {
     id: 'sub_1',
     status: 'active',
-    currentPeriodStart: 3000,
-    currentPeriodEnd: 4000,
+    currentPeriodStart: undefined,
+    currentPeriodEnd: undefined,
     cancelAtPeriodEnd: false,
   });
+});
+
+test('shapeSubscription reports no period for a subscription with no items', () => {
+  const shaped = shapeSubscription({
+    id: 'sub_1',
+    status: 'active',
+    cancel_at_period_end: false,
+    items: { data: [] },
+  });
+  assert.equal(shaped.currentPeriodStart, undefined);
+  assert.equal(shaped.currentPeriodEnd, undefined);
+});
+
+/**
+ * Without this header Stripe answers in whichever version the deployer's own
+ * account defaults to, which is set by that account's first ever API call and
+ * moves when somebody clicks upgrade in the Dashboard. Pinning is what makes the
+ * response shape a property of this code rather than of a stranger's dashboard,
+ * and it is what lets `shapeSubscription` above read exactly one shape.
+ *
+ * @see https://docs.stripe.com/upgrades
+ */
+test('every Stripe request pins the API version', async () => {
+  const versions: (string | null)[] = [];
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    versions.push(new Headers(init?.headers).get('stripe-version'));
+    const { pathname } = toUrl(input);
+    if (pathname === '/v1/customers/cus_1') {
+      return new Response(JSON.stringify({ id: 'cus_1', email: 'a@example.com', name: 'A' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    await lookupStripeRecord(ENV, 'cus_1');
+    assert.ok(versions.length > 0, 'expected the lookup to reach Stripe');
+    for (const version of versions) {
+      assert.match(String(version), /^\d{4}-\d{2}-\d{2}\./);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('getCustomer returns null for deleted customers', async () => {

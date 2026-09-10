@@ -462,7 +462,35 @@ export const ADMIN_HTML = `<!doctype html>
   </body>
 </html>`;
 
-const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
+// `no-store` on every JSON response, not only the ones carrying a customer.
+// Everything under /api/* is behind ADMIN_API_TOKEN and most of it is somebody's
+// billing record: email, invoice amounts, card brand and last four. A 200 with
+// no cache directive is heuristically cacheable, so the shared browser on a
+// support desk is one back-button away from showing the previous operator's
+// lookup. Applied to the errors too: one rule is easier to keep true than a
+// per-route judgement about which bodies are sensitive.
+const JSON_HEADERS = {
+  'content-type': 'application/json; charset=utf-8',
+  'cache-control': 'no-store',
+};
+
+/**
+ * The two pages this Worker serves as something other than JSON.
+ *
+ * `noindex, nofollow` because a deployment answers on a `*.workers.dev`
+ * hostname by default, and that hostname is public: the token gates `/api/*`,
+ * not the shell around it, so without this a crawler that finds the URL can put
+ * an organisation's admin console into search results. The header rather than a
+ * `<meta>` tag, so the plain-text root is covered by the same rule as the HTML.
+ *
+ * `nosniff` so a browser renders the admin page as the type it is declared to
+ * be rather than one it inferred.
+ */
+const PAGE_HEADERS = {
+  'content-type': 'text/plain; charset=utf-8',
+  'x-content-type-options': 'nosniff',
+  'x-robots-tag': 'noindex, nofollow',
+};
 
 export function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
@@ -541,13 +569,37 @@ export function validateEntryPayload(payload: EntryPayloadInput): EntryValidatio
   };
 }
 
+/**
+ * Constant-time in the comparison, not in the length check: two strings of
+ * different lengths return early, which leaks the token's length and nothing
+ * else. A length is not what breaks a shared secret; a prefix recovered one byte
+ * at a time from the timing of a short-circuiting `===` is.
+ *
+ * Bytes rather than characters, because `===` on strings and a naive loop over
+ * `charCodeAt` both compare code units. Encoding first means a token with a
+ * non-ASCII character is compared as the bytes that actually crossed the wire.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i++) diff |= left[i] ^ right[i];
+  return diff === 0;
+}
+
+/**
+ * `ADMIN_API_TOKEN` is the only credential this Worker has, and it gates every
+ * `/api/*` route, so it is compared in constant time rather than with `===`.
+ * The scheme and presence checks stay ordinary comparisons: neither is secret,
+ * and both have to be true before there is anything worth timing.
+ */
 function isAuthorized(request: Request, env: Env): boolean {
   const authHeader = request.headers.get('authorization') || '';
   const [scheme, token] = authHeader.split(' ');
   const normalizedScheme = (scheme || '').toLowerCase();
-  return Boolean(
-    normalizedScheme === 'token' && token && env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN
-  );
+  if (normalizedScheme !== 'token' || !token || !env.ADMIN_API_TOKEN) return false;
+  return timingSafeEqual(token, env.ADMIN_API_TOKEN);
 }
 
 async function readJson(request: Request): Promise<EntryPayloadInput | null> {
@@ -611,15 +663,15 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/') {
-      return new Response('Radiatus template worker is running. Visit /admin for the admin dashboard.', { status: 200 });
+      return new Response('Radiatus template worker is running. Visit /admin for the admin dashboard.', {
+        status: 200,
+        headers: PAGE_HEADERS,
+      });
     }
 
     if (url.pathname === '/admin' && request.method === 'GET') {
       return new Response(ADMIN_HTML, {
-        headers: {
-          'content-type': 'text/html; charset=utf-8',
-          'x-content-type-options': 'nosniff',
-        },
+        headers: { ...PAGE_HEADERS, 'content-type': 'text/html; charset=utf-8' },
       });
     }
 
@@ -671,7 +723,7 @@ export default {
       try {
         // env only — q is the address to look for, never the mailbox to read.
         const result = await listCorrespondence(env, q);
-        return json(result, 200, { 'cache-control': 'no-store' });
+        return json(result, 200);
       } catch (error) {
         if (error instanceof GraphApiError) {
           // Graph's own message can quote back tenant/app configuration, so the

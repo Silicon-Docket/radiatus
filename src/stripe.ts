@@ -1,6 +1,32 @@
 const STRIPE_API_BASE = 'https://api.stripe.com/v1';
 
 /**
+ * Pinned on every request, deliberately.
+ *
+ * A request with no `Stripe-Version` header is not versionless: Stripe answers
+ * it in whichever version the *deployer's* account defaults to. That default is
+ * fixed by the account's first ever API call and moves whenever somebody clicks
+ * upgrade in the Dashboard, so for a template that lands on accounts this repo
+ * will never see, an unpinned client makes its own response shape a property of
+ * a stranger's dashboard rather than of this code. Stripe's own upgrade guide
+ * says to pin: "specify the API version that you're integrating against in your
+ * code instead of relying on your account's default API version."
+ *
+ * It is also what lets `shapeSubscription` read one shape rather than guess
+ * between two. Basil (2025-03-31) removed the subscription-level billing period
+ * and moved it onto the subscription's items; this version is past that, so the
+ * item shape is the only one that can arrive.
+ *
+ * Raising it is a deliberate edit, not a maintenance chore. Read the changelog
+ * between the two versions first, because a major release may move a field this
+ * client reads, exactly as Basil did.
+ *
+ * @see https://docs.stripe.com/upgrades
+ * @see https://docs.stripe.com/changelog/basil/2025-03-31/deprecate-subscription-current-period-start-and-end
+ */
+const STRIPE_API_VERSION = '2026-08-26.dahlia';
+
+/**
  * The only binding this client needs. `STRIPE_SECRET_KEY` is optional on `Env`
  * because the feature ships switched off; it is required here, so the worker
  * has to narrow through `isStripeConfigured` before it can call in.
@@ -40,8 +66,9 @@ export interface StripeSubscription {
   status: string;
   customer?: string;
   cancel_at_period_end: boolean;
-  current_period_start?: number;
-  current_period_end?: number;
+  // Billing periods live on the items, not here. `STRIPE_API_VERSION` is past
+  // Basil, which removed the subscription-level pair, so declaring them at this
+  // level would describe a response this client cannot receive.
   items?: { data?: Array<{ current_period_start?: number; current_period_end?: number }> };
   [key: string]: unknown;
 }
@@ -158,7 +185,10 @@ async function stripeRequest<T>(env: StripeEnv, path: string, params: StripePara
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
   }
   const response = await fetch(url.toString(), {
-    headers: { Authorization: 'Bearer ' + env.STRIPE_SECRET_KEY },
+    headers: {
+      Authorization: 'Bearer ' + env.STRIPE_SECRET_KEY,
+      'Stripe-Version': STRIPE_API_VERSION,
+    },
   });
   // The body is read once and has to serve both branches, so it is parsed as the
   // payload intersected with Stripe's error envelope rather than as `any`.
@@ -270,15 +300,26 @@ export function shapeCustomer(customer: StripeCustomer): ShapedCustomer {
 }
 
 export function shapeSubscription(subscription: StripeSubscription): ShapedSubscription {
-  // Basil API version (2025-03-31+) moved period fields to items[0]; fall back to new location if top-level is missing
-  const periodStart = subscription.current_period_start ?? subscription.items?.data?.[0]?.current_period_start;
-  const periodEnd = subscription.current_period_end ?? subscription.items?.data?.[0]?.current_period_end;
+  // The first item's period, and no top-level fallback beside it. Basil removed
+  // `current_period_start` / `current_period_end` from the subscription resource
+  // and `STRIPE_API_VERSION` pins every request past that release, so a fallback
+  // here would be a second path for a shape that can no longer arrive.
+  //
+  // A webhook handler could not do this, because the version of a delivered
+  // event is the endpoint's rather than this client's. Every subscription
+  // reaching this function came from a request that carried the header, so one
+  // path is enough.
+  //
+  // Still `| undefined` on the way out: a subscription can be returned with no
+  // items, and the admin page renders a missing period as a dash rather than
+  // this throwing on a customer an operator is trying to look up.
+  const period = subscription.items?.data?.[0];
 
   return {
     id: subscription.id,
     status: subscription.status,
-    currentPeriodStart: periodStart,
-    currentPeriodEnd: periodEnd,
+    currentPeriodStart: period?.current_period_start,
+    currentPeriodEnd: period?.current_period_end,
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
   };
 }

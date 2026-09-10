@@ -43,7 +43,7 @@ Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** abo
 | Path | What it is |
 | --- | --- |
 | `src/worker.ts` | The Worker: routing, the admin page, request validation, D1 queries |
-| `src/stripe.ts` | Stripe REST API client — query classification, response shaping, lookup orchestration |
+| `src/stripe.ts` | Stripe REST API client, pinned API version, query classification, response shaping, lookup orchestration |
 | `src/graph.ts` | Microsoft Graph client for the optional Office 365 correspondence panel — token caching, metadata-only response shaping |
 | `src/types.ts` | The `Env` interface — the Worker's bindings and secrets, with the optional ones typed as optional |
 | `db/schema.ts` | Drizzle schema — the source of truth for the D1 table |
@@ -142,10 +142,31 @@ await fetch('/api/entries', {
 
 Leave the `GRAPH_*` variables unset and nothing changes &mdash; the panel just reports the feature as not configured. To turn it on, follow [docs/office365-mail-setup.md](./docs/office365-mail-setup.md) rather than improvising from the variable names.
 
+## Stripe API version
+
+`src/stripe.ts` sends a `Stripe-Version` header on every request, pinned to a
+single version in that file. This is worth knowing before you change it.
+
+A request *without* that header is not versionless: Stripe answers it in
+whichever version **your** account defaults to, which is fixed by your account's
+first ever API call and moves whenever someone clicks upgrade in the Dashboard.
+For a template deployed to accounts this repo will never see, that would make
+the response shape a property of your dashboard rather than of this code, and
+Stripe [recommends pinning](https://docs.stripe.com/upgrades) for exactly
+that reason.
+
+The pin is what lets the client read one response shape instead of guessing
+between two. Basil (2025-03-31) [removed the subscription-level billing
+period](https://docs.stripe.com/changelog/basil/2025-03-31/deprecate-subscription-current-period-start-and-end)
+and moved it onto the subscription's items; the pinned version is past that, so
+`shapeSubscription` reads the item shape and nothing else. If you raise the
+version, read the changelog between the two first: a major release can move a
+field this client depends on, exactly as Basil did.
+
 ## Security notes
 
 - `ADMIN_API_TOKEN` is a shared secret, not a per-user credential &mdash; anyone holding it has full read/write access to every entry. Set it with `wrangler secret put`, never commit it, and rotate it if it leaks.
-- The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. Put it behind Cloudflare Access or your own auth if it needs to be restricted further.
+- The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. Put it behind Cloudflare Access or your own auth if it needs to be restricted further. It is served `X-Robots-Tag: noindex, nofollow` so a crawler that finds the URL keeps your admin console out of search results. That keeps it unlisted, not private, and is no substitute for putting real auth in front of it.
 - `STRIPE_SECRET_KEY` follows the same handling as `ADMIN_API_TOKEN` &mdash; set via `wrangler secret put` for the deployed Worker and `.dev.vars` for local dev, never committed. Use a restricted, read-only key if your Stripe account supports it; this Worker never writes to Stripe.
 - `GRAPH_CLIENT_SECRET` (only if you enable the Office 365 panel) is handled the same way, and **expires within 24 months** &mdash; when it does, the panel starts returning `502` with nothing else in the deployment affected. Put the expiry in a calendar now; Microsoft will not warn you.
 - Enabling the Office 365 panel means anyone holding `ADMIN_API_TOKEN` can read message metadata &mdash; senders, subjects, timestamps &mdash; from the configured mailbox. Subjects are content: *"Re: refund for order #123"* leaks. Message bodies are excluded by the Exchange grant, but decide deliberately whether one shared token is the right gate for the rest before turning this on. [The setup doc](./docs/office365-mail-setup.md) covers the alternative.
