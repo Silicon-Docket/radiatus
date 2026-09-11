@@ -1,5 +1,5 @@
 # Copy this file to .dev.vars for local development (wrangler dev reads it automatically).
-# .dev.vars is gitignored — never commit real values.
+# .dev.vars is gitignored. Never commit real values.
 #
 # The "Deploy to Cloudflare Workers" button also reads this file to know which
 # secrets to prompt for during a one-click deploy.
@@ -10,14 +10,14 @@ ADMIN_API_TOKEN=
 
 # Stripe secret key used by /api/stripe/lookup for live customer/subscription/invoice data.
 # Use a *restricted* key with read-only access to Customers, Subscriptions, Invoices, and
-# PaymentMethods if you can — this Worker never writes to Stripe.
+# PaymentMethods if you can. This Worker never writes to Stripe.
 STRIPE_SECRET_KEY=
 
 # ---------------------------------------------------------------------------
 # OPTIONAL: Office 365 correspondence panel (/api/mail/lookup).
 #
 # Leave all four of these BLANK unless you want it. The Worker runs perfectly
-# well without them — the admin page simply reports the feature as not
+# well without them; the admin page simply reports the feature as not
 # configured, and nothing else changes. Setting some but not all of them is the
 # same as setting none.
 #
@@ -32,7 +32,7 @@ GRAPH_TENANT_ID=
 # Application (client) ID of the same registration.
 GRAPH_CLIENT_ID=
 
-# Client secret VALUE (not the secret ID). Expires within 24 months — when it
+# Client secret VALUE (not the secret ID). Expires within 24 months. When it
 # does, this panel starts failing and nothing else warns you. Diarise the date.
 GRAPH_CLIENT_SECRET=
 

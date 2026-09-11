@@ -5,7 +5,7 @@ Instructions for an AI coding agent helping someone deploy this template to thei
 ## Ground rules
 
 - **Never invent a secret value.** `ADMIN_API_TOKEN` is generated once and only the human should choose or approve it. You may offer to generate a random one (e.g. `openssl rand -hex 32`), but show it to them and let them say yes before using it.
-- **Confirm before anything that costs money, creates a cloud resource, or publishes.** Creating a D1 database, setting a secret, and running `wrangler deploy` all act on the human's real Cloudflare account. Say what you're about to run and why, then run it — don't batch these behind a single silent approval.
+- **Confirm before anything that costs money, creates a cloud resource, or publishes.** Creating a D1 database, setting a secret, and running `wrangler deploy` all act on the human's real Cloudflare account. Say what you're about to run and why, then run it, and don't batch these behind a single silent approval.
 - **Never commit a secret.** `.dev.vars` is gitignored; keep it that way. `wrangler secret put` uploads directly to Cloudflare and never touches a file in this repo.
 - **Don't attempt interactive browser login on the human's behalf.** If `npx wrangler whoami` shows no logged-in account, ask the human to run `npx wrangler login` themselves and tell you when it's done.
 
@@ -33,14 +33,14 @@ Instructions for an AI coding agent helping someone deploy this template to thei
 
    Parse `database_id` from the output and write it into `wrangler.toml` in place of `replace-with-your-d1-database-id`.
 
-4. Get a value for `ADMIN_API_TOKEN`, and a Stripe secret key for `STRIPE_SECRET_KEY` (ask the human for one — a restricted, read-only test-mode key is enough to verify the deploy works), then set both in the two places they're each needed — local `.dev.vars` and the deployed Worker's secrets are independent and `wrangler` does not sync them:
+4. Get a value for `ADMIN_API_TOKEN`, and a Stripe secret key for `STRIPE_SECRET_KEY` (ask the human for one: a restricted, read-only test-mode key is enough to verify the deploy works), then set both in the two places they're each needed. Local `.dev.vars` and the deployed Worker's secrets are independent and `wrangler` does not sync them:
 
    ```bash
    cp .dev.vars.example .dev.vars
    # write ADMIN_API_TOKEN=<value> and STRIPE_SECRET_KEY=<value> into .dev.vars
 
    npx wrangler secret put ADMIN_API_TOKEN
-   # paste the ADMIN_API_TOKEN value when prompted — uploads it to the deployed Worker
+   # paste the ADMIN_API_TOKEN value when prompted; uploads it to the deployed Worker
    npx wrangler secret put STRIPE_SECRET_KEY
    # paste the STRIPE_SECRET_KEY value when prompted
    ```
@@ -57,7 +57,7 @@ Instructions for an AI coding agent helping someone deploy this template to thei
    npm run deploy
    ```
 
-7. Wrangler prints a `*.workers.dev` URL. Verify the deployment by requesting it, and check that `/admin` loads. Report the URL back to the human, and remind them to store the `ADMIN_API_TOKEN` value somewhere durable (a password manager) — it isn't recoverable from Cloudflare after the fact.
+7. Wrangler prints a `*.workers.dev` URL. Verify the deployment by requesting it, and check that `/admin` loads. Report the URL back to the human, and remind them to store the `ADMIN_API_TOKEN` value somewhere durable (a password manager), because it isn't recoverable from Cloudflare after the fact.
 
 ## If the human already clicked "Deploy to Cloudflare"
 

@@ -62,7 +62,7 @@ export const ADMIN_HTML = `<!doctype html>
 
       <h2>Correspondence</h2>
       <p class="muted">
-        Message metadata from the shared Office 365 mailbox &mdash; dates, participants, and
+        Message metadata from the shared Office 365 mailbox: dates, participants, and
         subjects only. Message bodies are never fetched; open a message in Outlook to read it.
         Optional feature: see docs/office365-mail-setup.md.
       </p>
@@ -207,7 +207,7 @@ export const ADMIN_HTML = `<!doctype html>
             // Not an error: most deployments never set this feature up.
             mailStatus.textContent =
               'Office 365 mail lookup is not configured for this deployment. ' +
-              'This feature is optional — see docs/office365-mail-setup.md to enable it.';
+              'This feature is optional. See docs/office365-mail-setup.md to enable it.';
             return;
           }
           const data = await response.json();
@@ -220,7 +220,7 @@ export const ADMIN_HTML = `<!doctype html>
           } else if (data.mode === 'sender-only') {
             // Say what happened, not why. Graph rejects the participant search
             // with a 400 for several reasons and only one of them is "the grant
-            // forbids it" — asserting the permissions story would send an
+            // forbids it", so asserting the permissions story would send an
             // operator off to redo their Exchange RBAC over a malformed query.
             mailStatus.textContent =
               'Showing ' + data.messages.length + ' message(s) sent BY ' + address +
@@ -228,11 +228,11 @@ export const ADMIN_HTML = `<!doctype html>
               address + ' are not listed. If this persists, see docs/office365-mail-setup.md.';
           } else {
             // Graph returns $search results by relevance and refuses $orderby
-            // alongside $search, so say so — a date column otherwise reads as
+            // alongside $search, so say so; a date column otherwise reads as
             // "these are the most recent messages", which is not what this is.
             mailStatus.textContent =
               'Showing ' + data.messages.length + ' message(s) involving ' + address +
-              ', ranked by relevance rather than date — the newest message may not be listed.';
+              ', ranked by relevance rather than date. The newest message may not be listed.';
           }
         } catch (error) {
           mailStatus.textContent = '';
@@ -393,8 +393,8 @@ export const ADMIN_HTML = `<!doctype html>
           currentCustomerId = data.customer.id;
           currentCustomerEmail = data.customer.email || null;
           customerSummary.textContent =
-            (data.customer.name || '(no name)') + ' — ' + data.customer.email + ' — ' + data.customer.id +
-            (data.paymentMethod ? ' — ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
+            (data.customer.name || '(no name)') + ' · ' + data.customer.email + ' · ' + data.customer.id +
+            (data.paymentMethod ? ' · ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
 
           renderSubscriptions(data.subscriptions);
           renderInvoices(data.invoices);
@@ -660,7 +660,7 @@ export default {
       }
       // Bounded like the /api/entries handler. Without this an oversized q
       // reaches Graph, comes back 400, and the panel reports it as a mailbox
-      // capability finding — the operator then debugs the wrong thing.
+      // capability finding, and the operator then debugs the wrong thing.
       if (q.length > 320) {
         return json({ error: 'q is too long' }, 400);
       }
@@ -669,13 +669,13 @@ export default {
         return json({ error: 'Office 365 mail lookup is not configured' }, 501);
       }
       try {
-        // env only — q is the address to look for, never the mailbox to read.
+        // env only: q is the address to look for, never the mailbox to read.
         const result = await listCorrespondence(env, q);
         return json(result, 200, { 'cache-control': 'no-store' });
       } catch (error) {
         if (error instanceof GraphApiError) {
           // Graph's own message can quote back tenant/app configuration, so the
-          // status is all the client gets — same rule as the Stripe route.
+          // status is all the client gets, the same rule as the Stripe route.
           return json({ error: 'Microsoft Graph error', graphStatus: error.status }, 502);
         }
         throw error;

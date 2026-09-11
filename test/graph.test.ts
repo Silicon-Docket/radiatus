@@ -366,7 +366,7 @@ test('a failed token request throws GraphApiError carrying the AADSTS code, neve
   }
 });
 
-test('a token failure is not cached — the next call retries', async () => {
+test('a token failure is not cached, so the next call retries', async () => {
   resetTokenCache();
   const calls = stubFetch({
     token: (url, init, callNumber) =>

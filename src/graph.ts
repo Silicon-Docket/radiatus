@@ -3,7 +3,7 @@ const LOGIN_BASE = 'https://login.microsoftonline.com';
 
 // Refresh a little before the token actually expires so an in-flight request
 // never races the expiry. The lifetime itself always comes from the token
-// response — never hardcoded, never read out of the JWT.
+// response, never hardcoded, never read out of the JWT.
 const TOKEN_EXPIRY_SKEW_SECONDS = 300;
 
 // The only message fields this integration ever asks Graph for. Kept in lockstep
@@ -23,7 +23,7 @@ const MESSAGE_LIMIT = 25;
 
 /**
  * The bindings this client needs. The three app-registration values are
- * required — the worker narrows `Env` through `isGraphConfigured` before it can
+ * required, and the worker narrows `Env` through `isGraphConfigured` before it can
  * call in. `GRAPH_MAILBOX` stays optional because `listCorrespondence` checks it
  * itself and refuses to run without it, which is a promise worth keeping in the
  * module that makes the request rather than only at the call site.
@@ -66,7 +66,7 @@ export interface GraphRecipient {
 }
 
 /**
- * The message fields this module reads. Graph sends far more — bodies included —
+ * The message fields this module reads. Graph sends far more (bodies included),
  * which is what the index signature acknowledges: those fields arrive, and
  * shapeMessage() below is what stops them leaving.
  */
@@ -97,7 +97,7 @@ export interface ShapedParticipant {
 
 /**
  * SECURITY BOUNDARY. The exact set of message fields that leaves this module,
- * and the declared return type of shapeMessage() — so adding a stray field to
+ * and the declared return type of shapeMessage(), so adding a stray field to
  * that object literal is a compile error, not something only a test catches.
  * `body` and `bodyPreview` are absent by decision, not by oversight.
  * Adding a field here means deciding it is safe to expose to anyone holding
@@ -257,7 +257,7 @@ export async function graphRequest<T>(env: GraphEnv, path: string, params: Graph
 /**
  * SECURITY BOUNDARY. This is an explicit allow-list, not a deny-list: only the
  * metadata fields named below ever leave this module. `body` and `bodyPreview`
- * are not omitted by oversight — excluding message content is the whole premise
+ * are not omitted by oversight; excluding message content is the whole premise
  * of this integration, and this function is the code-side half of that promise
  * (the Exchange `Application Mail.ReadBasic` grant is the other half).
  * Do not add a field here without deciding it is safe to expose to anyone
@@ -302,7 +302,7 @@ function escapeSearchTerm(value: string): string {
  * would turn a caller holding ADMIN_API_TOKEN into a tenant-wide mailbox browser.
  *
  * Returns { messages, mode }. `mode` is 'search' when Graph's $search ran, and
- * 'sender-only' when it was refused and we fell back to filtering on sender —
+ * 'sender-only' when it was refused and we fell back to filtering on sender,
  * a view that shows what the customer sent but not what was replied.
  */
 export async function listCorrespondence(env: GraphEnv, address: string): Promise<CorrespondenceResult> {
@@ -324,7 +324,7 @@ export async function listCorrespondence(env: GraphEnv, address: string): Promis
     // It is not verified whether $search is permitted under an Exchange RBAC
     // `Application Mail.ReadBasic` grant. A refusal (400 malformed/unsupported,
     // 403 not permitted) degrades to sender-only rather than failing the panel.
-    // Anything else — auth, throttling, outage — is a real error and propagates.
+    // Anything else (auth, throttling, outage) is a real error and propagates.
     const refused = error instanceof GraphApiError && (error.status === 400 || error.status === 403);
     if (!refused) throw error;
   }

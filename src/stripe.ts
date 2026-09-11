@@ -23,7 +23,7 @@ interface StripeList<T> {
 }
 
 // The interfaces below describe only the fields this module reads. Stripe sends
-// a great deal more, which is what the index signatures acknowledge — those
+// a great deal more, which is what the index signatures acknowledge; those
 // extra fields exist, they are simply never looked at and never forwarded.
 
 export interface StripeCustomer {
@@ -63,7 +63,7 @@ export interface StripePaymentMethod {
 }
 
 /**
- * SECURITY BOUNDARY. The exact set of customer fields that leaves this module —
+ * SECURITY BOUNDARY. The exact set of customer fields that leaves this module:
  * the return type of `shapeCustomer`, so a stray field in that object literal is
  * a compile error rather than something only a test catches. Adding a field here
  * means deciding it is safe to expose to anyone holding ADMIN_API_TOKEN.
@@ -103,7 +103,7 @@ export interface ShapedInvoice {
 }
 
 /**
- * SECURITY BOUNDARY. Brand and last four digits only — never the full PAN
+ * SECURITY BOUNDARY. Brand and last four digits only, never the full PAN
  * surrogate, expiry, fingerprint, or billing address Stripe returns alongside
  * them. Adding a field here means deciding it is safe to expose to anyone
  * holding ADMIN_API_TOKEN.

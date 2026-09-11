@@ -1,4 +1,4 @@
-// Drizzle schema for D1 — this is the source of truth for the table shape.
+// Drizzle schema for D1. This is the source of truth for the table shape.
 // Edit this file, then run `npm run db:generate` to produce a migration.
 import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
