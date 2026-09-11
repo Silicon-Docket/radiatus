@@ -419,6 +419,72 @@ test('/api/mail/lookup reads the mailbox from env, never from the query string',
   }
 });
 
+/**
+ * ADMIN_API_TOKEN is the only credential this Worker has and it gates every
+ * `/api/*` route, so it is compared in constant time. A plain `===` returns as
+ * soon as two bytes differ, which is what lets a prefix be recovered one byte at
+ * a time; the cases below pin the outcomes that comparison has to keep getting
+ * right, since the timing itself is not something a unit test can observe.
+ */
+test('a token sharing a prefix with the real one is rejected', async () => {
+  for (const wrong of ['s', 'secre', 'secrets', 'secreT', 'xxxxxx']) {
+    const request = new Request('https://worker.example/api/stripe/lookup?q=cus_1', {
+      headers: { Authorization: 'Token ' + wrong },
+    });
+    const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret' });
+    assert.equal(response.status, 401, `expected ${wrong} to be rejected`);
+  }
+});
+
+test('the correct token is still accepted', async () => {
+  const request = new Request('https://worker.example/api/stripe/lookup', {
+    headers: { Authorization: 'Token secret' },
+  });
+  const response = await worker.fetch(request, { DB, ADMIN_API_TOKEN: 'secret' });
+  // 400 for the missing q, which is past the gate: authorization succeeded.
+  assert.equal(response.status, 400);
+});
+
+/**
+ * Everything under `/api/*` is behind the token and most of it is somebody's
+ * billing record, so no response from this Worker should be sitting in a shared
+ * browser's cache for the next operator to page back to.
+ */
+test('every /api/ response is uncacheable, refusals included', async () => {
+  const unauthorized = await worker.fetch(
+    new Request('https://worker.example/api/stripe/lookup?q=cus_1'),
+    { DB, ADMIN_API_TOKEN: 'secret' },
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get('cache-control'), 'no-store');
+
+  const notFound = await worker.fetch(
+    new Request('https://worker.example/api/nope', { headers: { Authorization: 'Token secret' } }),
+    { DB, ADMIN_API_TOKEN: 'secret' },
+  );
+  assert.equal(notFound.headers.get('cache-control'), 'no-store');
+});
+
+/**
+ * A deployment answers on a public `*.workers.dev` hostname by default and the
+ * token gates `/api/*`, not the pages around it, so without this an
+ * organisation's admin console can be indexed by anything that finds the URL.
+ */
+test('the admin page and the root are served noindex and nosniff', async () => {
+  const env = { DB, ADMIN_API_TOKEN: 'secret' };
+
+  const admin = await worker.fetch(new Request('https://worker.example/admin'), env);
+  assert.equal(admin.status, 200);
+  assert.equal(admin.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal(admin.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(admin.headers.get('content-type') ?? '', /^text\/html/);
+
+  const root = await worker.fetch(new Request('https://worker.example/'), env);
+  assert.equal(root.status, 200);
+  assert.equal(root.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal(root.headers.get('x-content-type-options'), 'nosniff');
+});
+
 test('ADMIN_HTML includes every element id the script depends on', () => {
   for (const id of [
     'token',
