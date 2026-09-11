@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn `/admin` from a generic key/value CRUD list into a search-first CRM: look up a customer by email or Stripe ID, see their live status/billing/payment history from Stripe, and attach notes — and rebrand the project's copy to match.
+**Goal:** Turn `/admin` from a generic key/value CRUD list into a search-first CRM: look up a customer by email or Stripe ID, see their live status/billing/payment history from Stripe, and attach notes, plus rebrand the project's copy to match.
 
 **Architecture:** A new `src/stripe.js` module talks to Stripe's REST API via plain `fetch` and shapes the response; `src/worker.js` gains one new authenticated route, `GET /api/stripe/lookup`, that calls it; `ADMIN_HTML` is redesigned around a search box whose result scopes the existing notes CRUD to a specific customer/subscription instead of listing all of them.
 
@@ -12,12 +12,12 @@
 
 ## Global Constraints
 
-- No new runtime npm dependency for the Stripe integration — plain `fetch`, not the `stripe` SDK.
-- No frontend framework or build step — `ADMIN_HTML` stays a single template string.
-- Read-only in v1 — no Stripe writes (refund, cancel, plan change).
+- No new runtime npm dependency for the Stripe integration: plain `fetch`, not the `stripe` SDK.
+- No frontend framework or build step: `ADMIN_HTML` stays a single template string.
+- Read-only in v1: no Stripe writes (refund, cancel, plan change).
 - The existing `ADMIN_API_TOKEN` gate covers the new endpoint; no second auth mechanism.
 - `STRIPE_SECRET_KEY` is never logged and never appears in a response body.
-- Payment method data returned to the client is limited to `{brand, last4}` — nothing closer to a full card number.
+- Payment method data returned to the client is limited to `{brand, last4}`, nothing closer to a full card number.
 - Tests mock Stripe's HTTP responses; no live `STRIPE_SECRET_KEY` in CI.
 - Rebrand copy converges on: "an open-source CRM connecting Stripe and Cloudflare."
 
@@ -262,7 +262,7 @@ test('lookupStripeRecord surfaces a Stripe-side failure as StripeApiError', asyn
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `node --test test/stripe.test.js`
-Expected: FAIL — `src/stripe.js` doesn't exist yet, so the import throws (`Cannot find module '../src/stripe.js'`).
+Expected: FAIL. `src/stripe.js` doesn't exist yet, so the import throws (`Cannot find module '../src/stripe.js'`).
 
 - [ ] **Step 3: Write `src/stripe.js`**
 
@@ -432,7 +432,7 @@ git commit -m "Add a Stripe REST API client for live customer/subscription looku
 
 **Interfaces:**
 - Consumes: `classifyQuery`, `StripeApiError`, `lookupStripeRecord` from `src/stripe.js` (Task 1).
-- Produces (used by Task 3): `GET /api/stripe/lookup?q=<query>` — `400` if `q` is missing, `401` if unauthorized (existing `isAuthorized` gate), `404` if Stripe has no match, `502` on a Stripe-side error, `200` with the `lookupStripeRecord` result body otherwise.
+- Produces (used by Task 3): `GET /api/stripe/lookup?q=<query>`, returning `400` if `q` is missing, `401` if unauthorized (existing `isAuthorized` gate), `404` if Stripe has no match, `502` on a Stripe-side error, `200` with the `lookupStripeRecord` result body otherwise.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -502,7 +502,7 @@ test('/api/stripe/lookup returns 502 when Stripe errors', async () => {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `node --test test/worker.test.js`
-Expected: FAIL — the four new tests get a `404`/generic "Not found" from the router instead of the expected statuses, since the route doesn't exist yet (the `400` test in particular will fail because it currently falls through to the catch-all `json({ error: 'Not found' }, 404)`).
+Expected: FAIL. The four new tests get a `404`/generic "Not found" from the router instead of the expected statuses, since the route doesn't exist yet (the `400` test in particular will fail because it currently falls through to the catch-all `json({ error: 'Not found' }, 404)`).
 
 - [ ] **Step 3: Add the import and the route to `src/worker.js`**
 
@@ -554,7 +554,7 @@ Append to `.dev.vars.example`:
 ```
 # Stripe secret key used by /api/stripe/lookup for live customer/subscription/invoice data.
 # Use a *restricted* key with read-only access to Customers, Subscriptions, Invoices, and
-# PaymentMethods if you can — this Worker never writes to Stripe.
+# PaymentMethods if you can. This Worker never writes to Stripe.
 STRIPE_SECRET_KEY=
 ```
 
@@ -563,28 +563,28 @@ STRIPE_SECRET_KEY=
 In `AGENTS.md`, replace step 4 (currently only about `ADMIN_API_TOKEN`):
 
 ```markdown
-4. Get a value for `ADMIN_API_TOKEN` from the human (or generate one and get their sign-off), then set it in both places it's needed — they are independent and `wrangler` does not sync them:
+4. Get a value for `ADMIN_API_TOKEN` from the human (or generate one and get their sign-off), then set it in both places it's needed. They are independent and `wrangler` does not sync them:
 
    ```bash
    cp .dev.vars.example .dev.vars
    # write ADMIN_API_TOKEN=<value> into .dev.vars
 
    npx wrangler secret put ADMIN_API_TOKEN
-   # paste the same value when prompted — this uploads it to the deployed Worker
+   # paste the same value when prompted; this uploads it to the deployed Worker
    ```
 ```
 
 with:
 
 ```markdown
-4. Get a value for `ADMIN_API_TOKEN`, and a Stripe secret key for `STRIPE_SECRET_KEY` (ask the human for one — a restricted, read-only test-mode key is enough to verify the deploy works), then set both in the two places they're each needed — local `.dev.vars` and the deployed Worker's secrets are independent and `wrangler` does not sync them:
+4. Get a value for `ADMIN_API_TOKEN`, and a Stripe secret key for `STRIPE_SECRET_KEY` (ask the human for one: a restricted, read-only test-mode key is enough to verify the deploy works), then set both in the two places they're each needed. Local `.dev.vars` and the deployed Worker's secrets are independent and `wrangler` does not sync them:
 
    ```bash
    cp .dev.vars.example .dev.vars
    # write ADMIN_API_TOKEN=<value> and STRIPE_SECRET_KEY=<value> into .dev.vars
 
    npx wrangler secret put ADMIN_API_TOKEN
-   # paste the ADMIN_API_TOKEN value when prompted — uploads it to the deployed Worker
+   # paste the ADMIN_API_TOKEN value when prompted; uploads it to the deployed Worker
    npx wrangler secret put STRIPE_SECRET_KEY
    # paste the STRIPE_SECRET_KEY value when prompted
    ```
@@ -603,7 +603,7 @@ In the API reference table, add a row:
 In the "Security notes" section, add a bullet:
 
 ```markdown
-- `STRIPE_SECRET_KEY` follows the same handling as `ADMIN_API_TOKEN` — set via `wrangler secret put` for the deployed Worker and `.dev.vars` for local dev, never committed. Use a restricted, read-only key if your Stripe account supports it; this Worker never writes to Stripe.
+- `STRIPE_SECRET_KEY` follows the same handling as `ADMIN_API_TOKEN`: set via `wrangler secret put` for the deployed Worker and `.dev.vars` for local dev, never committed. Use a restricted, read-only key if your Stripe account supports it; this Worker never writes to Stripe.
 ```
 
 - [ ] **Step 9: Commit**
@@ -623,9 +623,9 @@ git commit -m "Add GET /api/stripe/lookup and wire up STRIPE_SECRET_KEY"
 
 **Interfaces:**
 - Consumes: `GET /api/stripe/lookup` (Task 2), the existing `/api/entries` CRUD (unchanged).
-- Produces: nothing consumed by a later task — this is the last code task.
+- Produces: nothing consumed by a later task. This is the last code task.
 
-**Note on test scope:** This template has no DOM-testing setup (no jsdom, no browser test runner) — `test/worker.test.js` only ever tests pure functions and the router. Adding one would be new build/test infrastructure, which the spec's non-goals rule out for this feature. So this task's automated test is a structural check (the script's `document.getElementById` calls all have a matching `id` in the markup), not a behavioral one — behavior is checked manually in Step 5.
+**Note on test scope:** This template has no DOM-testing setup (no jsdom, no browser test runner). `test/worker.test.js` only ever tests pure functions and the router. Adding one would be new build/test infrastructure, which the spec's non-goals rule out for this feature. So this task's automated test is a structural check (the script's `document.getElementById` calls all have a matching `id` in the markup), not a behavioral one; behavior is checked manually in Step 5.
 
 - [ ] **Step 1: Write the failing structural test**
 
@@ -669,7 +669,7 @@ test('ADMIN_HTML includes every element id the script depends on', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `node --test test/worker.test.js`
-Expected: FAIL — the current `ADMIN_HTML` has `customer-id`, `subscription-id`, `filter-subscription`, `load` instead of the new ids; several assertions fail.
+Expected: FAIL. The current `ADMIN_HTML` has `customer-id`, `subscription-id`, `filter-subscription`, `load` instead of the new ids; several assertions fail.
 
 - [ ] **Step 3: Replace `ADMIN_HTML`'s body and script**
 
@@ -917,8 +917,8 @@ In `src/worker.js`, replace everything between `<body>` and `</body>` (i.e. from
 
           currentCustomerId = data.customer.id;
           customerSummary.textContent =
-            (data.customer.name || '(no name)') + ' — ' + data.customer.email + ' — ' + data.customer.id +
-            (data.paymentMethod ? ' — ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
+            (data.customer.name || '(no name)') + ' · ' + data.customer.email + ' · ' + data.customer.id +
+            (data.paymentMethod ? ' · ' + data.paymentMethod.brand + ' •••• ' + data.paymentMethod.last4 : '');
 
           renderSubscriptions(data.subscriptions);
           renderInvoices(data.invoices);
@@ -991,7 +991,7 @@ Expected: PASS, all tests.
 
 - [ ] **Step 5: Manual verification**
 
-This exercises the actual browser behavior the structural test can't (no DOM test infra — see the note above). Needs a Stripe test-mode secret key and at least one test customer/subscription in that Stripe account.
+This exercises the actual browser behavior the structural test can't (no DOM test infra; see the note above). Needs a Stripe test-mode secret key and at least one test customer/subscription in that Stripe account.
 
 1. `cp .dev.vars.example .dev.vars`, fill in `ADMIN_API_TOKEN` and a Stripe **test-mode** `STRIPE_SECRET_KEY`.
 2. `npm run dev`, open `http://127.0.0.1:8787/admin`, paste the admin token.
@@ -1020,7 +1020,7 @@ git commit -m "Redesign the admin page as a search-first Stripe/D1 CRM view"
 - Modify: `package.json:4` (`description`)
 - Modify: `README.md` (H1 subtitle, "Key features" section)
 
-**Interfaces:** None — copy-only, no code.
+**Interfaces:** None. Copy-only, no code.
 
 - [ ] **Step 1: Update `package.json`**
 
@@ -1050,7 +1050,7 @@ to:
 
 ```markdown
 <p align="center">
-  <em>An open-source CRM connecting Stripe and Cloudflare &mdash; search a customer, see their subscription status, and leave notes for your team.</em>
+  <em>An open-source CRM connecting Stripe and Cloudflare: search a customer, see their subscription status, and leave notes for your team.</em>
 </p>
 ```
 
@@ -1059,9 +1059,9 @@ to:
 Change the bullet list:
 
 ```markdown
-- **Zero servers**: runs entirely on Cloudflare Workers + D1 — nothing to provision, patch, or scale by hand.
+- **Zero servers**: runs entirely on Cloudflare Workers + D1, with nothing to provision, patch, or scale by hand.
 - **Stripe-shaped by default**: every record is keyed to a `stripe_customer_id` and `stripe_subscription_id` out of the box.
-- **Admin UI included**: a built-in `/admin` page for create/list/update/delete — no separate frontend to build.
+- **Admin UI included**: a built-in `/admin` page for create/list/update/delete, with no separate frontend to build.
 - **Token-gated API**: every `/api/*` route requires an `Authorization: Token <token>` secret; nothing is open by default.
 - **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 migrations apply` runs migrations.
 ```
@@ -1069,16 +1069,16 @@ Change the bullet list:
 to:
 
 ```markdown
-- **Search-first troubleshooting**: look up a customer by email, or a Stripe customer/subscription ID, and see their live status, billing period, payment method, and recent invoices — not just what's stored locally.
+- **Search-first troubleshooting**: look up a customer by email, or a Stripe customer/subscription ID, and see their live status, billing period, payment method, and recent invoices, not just what's stored locally.
 - **Notes on top of live data**: attach internal notes/flags to a customer or subscription, layered on top of the real Stripe record instead of replacing it.
-- **Zero servers**: runs entirely on Cloudflare Workers + D1 — nothing to provision, patch, or scale by hand.
+- **Zero servers**: runs entirely on Cloudflare Workers + D1, with nothing to provision, patch, or scale by hand.
 - **Token-gated API**: every `/api/*` route (including the Stripe lookup) requires an `Authorization: Token <token>` secret; nothing is open by default.
 - **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 migrations apply` runs migrations.
 ```
 
 - [ ] **Step 4: Read through the full README once**
 
-Confirm nothing else still describes the page as a plain "admin surface" or "list of entries" — the Quick start, API reference, and Project structure sections from earlier tasks already reflect the CRM behavior; this step is just a final consistency pass over prose, not a checklist of specific edits.
+Confirm nothing else still describes the page as a plain "admin surface" or "list of entries". The Quick start, API reference, and Project structure sections from earlier tasks already reflect the CRM behavior; this step is just a final consistency pass over prose, not a checklist of specific edits.
 
 - [ ] **Step 5: Commit**
 

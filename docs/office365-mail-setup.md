@@ -8,8 +8,8 @@ the template changes. It is deliberately kept out of [Quick start](../README.md#
 ## What it does
 
 On the customer view in `/admin`, a **Correspondence** panel with a
-**Load correspondence** button. Clicking it lists message *metadata* — received
-date, sender, subject, attachment flag — from one shared mailbox, searched for
+**Load correspondence** button. Clicking it lists message *metadata* (received
+date, sender, subject, attachment flag) from one shared mailbox, searched for
 messages involving the customer's email address. Each row links out to the
 message's Outlook `webLink`.
 
@@ -18,7 +18,7 @@ becomes a term in a Graph KQL `$search` query, and only quote characters are
 stripped from it, so someone who already holds `ADMIN_API_TOKEN` can pass KQL
 operators and broaden the query to enumerate metadata in that mailbox beyond one
 customer's correspondence. That is a small step up from what the token already
-allows — it can query any address — which is why it is not treated as a hole to
+allows (it can query any address), which is why it is not treated as a hole to
 plug. The two properties that *are* boundaries hold regardless: the mailbox
 comes from configuration and no request can change it, and message bodies are
 excluded by the Exchange grant rather than by our filtering.
@@ -46,12 +46,12 @@ You need:
   request to someone else, and the wait is part of the cost.
 - The [ExchangeOnlineManagement PowerShell module](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2)
   installed locally.
-- A dedicated shared mailbox for customer support — do not point this at a
+- A dedicated shared mailbox for customer support. Do not point this at a
   person's mailbox.
 - Roughly 30 minutes of work, plus a **30-minute to 2-hour propagation delay**
   before you can tell whether it worked. Budget for coming back tomorrow.
 
-## Step 1 — Register the application in Entra
+## Step 1: Register the application in Entra
 
 1. Entra admin center → **Identity** → **Applications** → **App registrations**
    → **New registration**.
@@ -62,7 +62,7 @@ You need:
 5. **Certificates & secrets** → **New client secret**. Copy the secret **Value**
    (not the Secret ID) → `GRAPH_CLIENT_SECRET`. It is shown once.
 
-## Step 2 — Do NOT grant any Graph mail permission
+## Step 2: Do NOT grant any Graph mail permission
 
 > **Do NOT add any `Mail.*` API permission under "API permissions".**
 >
@@ -73,8 +73,8 @@ You need:
 This is the step your muscle memory will reach for, and it is the one that
 quietly ruins the security model. Entra application permissions and Exchange
 RBAC for Applications are **two independent grant authorities, and they union**.
-Consent `Mail.Read` in Entra — documented as *"read mail in all mailboxes
-without a signed-in user"* — and the mailbox scope you configure in Step 3 stops
+Consent `Mail.Read` in Entra, documented as *"read mail in all mailboxes
+without a signed-in user"*, and the mailbox scope you configure in Step 3 stops
 constraining anything. Nothing fails. Nothing warns you. The panel works
 identically, while the application can in fact read every mailbox in the tenant.
 
@@ -85,7 +85,7 @@ If someone has already granted consent, remove the permission and revoke the
 consent before continuing, then re-run `Test-ServicePrincipalAuthorization` in
 Step 4 to confirm access still comes only from the RBAC assignment.
 
-## Step 3 — Grant access through Exchange RBAC only
+## Step 3: Grant access through Exchange RBAC only
 
 Connect as an Exchange Administrator:
 
@@ -135,7 +135,7 @@ New-ManagementRoleAssignment `
 excludes message bodies **at the grant**, not in our code. Do not substitute
 `Application Mail.Read` because a snippet somewhere used it.
 
-## Step 4 — Verify the scope actually binds
+## Step 4: Verify the scope actually binds
 
 ```powershell
 Test-ServicePrincipalAuthorization -Identity "<GRAPH_CLIENT_ID>" -Resource "support@yourdomain.com"
@@ -144,15 +144,15 @@ Test-ServicePrincipalAuthorization -Identity "<GRAPH_CLIENT_ID>" -Resource "supp
 Read the output carefully. You are checking two things:
 
 1. The in-scope mailbox is **granted** `Mail.ReadBasic`.
-2. A mailbox **outside** the group is **denied** — run the same command against
+2. A mailbox **outside** the group is **denied**. Run the same command against
    another address and confirm it comes back denied. If it comes back granted,
    an Entra consent is in play (see Step 2) or the scope filter is wrong.
 
 Allow **30 minutes to 2 hours** for the assignment to propagate before trusting
 either result. A denial immediately after assignment usually means "not yet",
-not "misconfigured" — wait before you start changing things.
+not "misconfigured", so wait before you start changing things.
 
-## Step 5 — Set the variables
+## Step 5: Set the variables
 
 Local dev and the deployed Worker are separate; `wrangler` does not sync them.
 
@@ -178,7 +178,7 @@ the other two as risks to what the panel can show you.
    accepted at all.** Microsoft's RBAC-for-Applications documentation implies
    access can come from the Exchange assignment alone, but never states it
    normatively. If Graph returns `403` even after propagation and
-   `Test-ServicePrincipalAuthorization` says granted, that is the case failing —
+   `Test-ServicePrincipalAuthorization` says granted, that is the case failing,
    and the only known workaround is an Entra consent, which reintroduces exactly
    the tenant-wide grant this design exists to avoid. Prefer to leave the
    feature off rather than take that trade.
@@ -186,7 +186,7 @@ the other two as risks to what the panel can show you.
    integration falls back automatically to filtering on sender and returns
    `mode: 'sender-only'`; the panel then says in plain words that only messages
    *from* the customer are listed and your replies are not. That degradation is
-   built in and needs no action — but it means the panel may show half the
+   built in and needs no action, but it means the panel may show half the
    conversation.
 3. **Whether the fallback's own query is accepted.** The sender-only fallback
    filters on `from/emailAddress/address` while sorting on `receivedDateTime`.
@@ -196,7 +196,7 @@ the other two as risks to what the panel can show you.
    reports a Graph error. Nothing else in the deployment is affected.
 
 Note also that in `search` mode Graph orders results by relevance, and `$search`
-cannot be combined with `$orderby` on messages — so the 25 messages listed are
+cannot be combined with `$orderby` on messages, so the 25 messages listed are
 not necessarily the 25 most recent. The panel says so above the table.
 
 ## Operational notes
@@ -208,7 +208,7 @@ not necessarily the 25 most recent. The panel says so above the table.
   holding it can list this mailbox's message metadata through the API, and there
   is no record of who did. Exchange's own `MailItemsAccessed` audit record is
   enabled by default only on E3/E5 licences. If you cannot live with that,
-  do not enable this feature — or put `/admin` behind Cloudflare Access first.
+  do not enable this feature, or put `/admin` behind Cloudflare Access first.
 - **Turning it off** is removing the variables (`wrangler secret delete
   GRAPH_CLIENT_SECRET`, etc.). Remove the RBAC assignment too if you are done
   with it: `Remove-ManagementRoleAssignment`.

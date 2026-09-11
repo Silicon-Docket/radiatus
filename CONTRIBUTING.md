@@ -6,7 +6,7 @@ Check out the [good first issues](https://github.com/Silicon-Docket/radiatus/con
 
 ## Getting set up
 
-See the [Quick start](./README.md#quick-start) in the README &mdash; the same steps you'd use to deploy the template also get you a working local environment for development.
+See the [Quick start](./README.md#quick-start) in the README. The same steps you'd use to deploy the template also get you a working local environment for development.
 
 Before opening a PR:
 
@@ -18,8 +18,8 @@ npm test
 
 ## AI usage
 
-If you use an AI tool (Copilot, Claude, ChatGPT, etc.) to help with a contribution, that's fine &mdash; but please disclose it in the PR description, and make sure you've actually read, understood, and tested the change yourself before submitting. You're responsible for everything in the PR, generated or not.
+If you use an AI tool (Copilot, Claude, ChatGPT, etc.) to help with a contribution, that's fine, but please disclose it in the PR description, and make sure you've actually read, understood, and tested the change yourself before submitting. You're responsible for everything in the PR, generated or not.
 
 ## Scope
 
-Radiatus is meant to stay a small, readable starting point &mdash; not grow into a framework. Prefer changes that make the existing template clearer or more correct over ones that add new configuration surface or optional features.
+Radiatus is meant to stay a small, readable starting point, not grow into a framework. Prefer changes that make the existing template clearer or more correct over ones that add new configuration surface or optional features.
