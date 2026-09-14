@@ -17,14 +17,27 @@ export const ADMIN_HTML = `<!doctype html>
       .row { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .muted { color: #555; font-size: 0.9rem; }
       .error { color: #b00020; }
+      button.link { width: auto; padding: 0; border: 0; background: none;
+        color: #0645ad; text-decoration: underline; cursor: pointer; }
     </style>
   </head>
   <body>
     <h1>Radiatus: Stripe Subscription CRM</h1>
     <p class="muted">Search a customer by email, or a Stripe customer/subscription ID, to see their live status and attach notes.</p>
 
-    <label>Admin API Token</label>
-    <input id="token" type="password" placeholder="Paste ADMIN_API_TOKEN" />
+    <div id="signin">
+      <p class="muted">Sign in once with the admin token. It is exchanged for a
+        session cookie the browser keeps, so it is not stored in this page and
+        does not need retyping on every load.</p>
+      <label for="signin-token">Admin API Token</label>
+      <input id="signin-token" type="password" autocomplete="current-password"
+        placeholder="Paste ADMIN_API_TOKEN" />
+      <button id="signin-submit" type="button">Sign in</button>
+      <p id="signin-error" class="error"></p>
+    </div>
+
+    <div id="app" hidden>
+    <p class="muted"><button id="signout" type="button" class="link">Sign out</button></p>
 
     <div class="row">
       <div>
@@ -94,8 +107,15 @@ export const ADMIN_HTML = `<!doctype html>
       </table>
     </div>
 
+    </div>
+
     <script>
-      const tokenNode = document.getElementById('token');
+      const signinPanel = document.getElementById('signin');
+      const signinToken = document.getElementById('signin-token');
+      const signinSubmit = document.getElementById('signin-submit');
+      const signinError = document.getElementById('signin-error');
+      const signoutButton = document.getElementById('signout');
+      const appPanel = document.getElementById('app');
       const searchInput = document.getElementById('search-input');
       const searchButton = document.getElementById('search');
       const statusNode = document.getElementById('status');
@@ -114,10 +134,70 @@ export const ADMIN_HTML = `<!doctype html>
       let currentCustomerId = null;
       let currentCustomerEmail = null;
 
-      const authHeaders = () => ({
-        'Content-Type': 'application/json',
-        'Authorization': 'Token ' + tokenNode.value.trim(),
-      });
+      // No Authorization header: the session cookie rides along on same-origin
+      // requests, and being HttpOnly it is not something this script could add
+      // even if it wanted to.
+      const authHeaders = () => ({ 'Content-Type': 'application/json' });
+
+      function showSignin(message) {
+        appPanel.hidden = true;
+        signinPanel.hidden = false;
+        signinError.textContent = message || '';
+        signinToken.value = '';
+        signinToken.focus();
+      }
+
+      function showApp() {
+        signinPanel.hidden = true;
+        signinError.textContent = '';
+        appPanel.hidden = false;
+      }
+
+      // Any 401 mid-session means the cookie expired or was revoked. Bounce
+      // back to the sign-in panel rather than reporting it as a lookup failure.
+      function handleUnauthorized(response) {
+        if (response.status !== 401) return false;
+        showSignin('That session has expired. Sign in again.');
+        return true;
+      }
+
+      async function signIn() {
+        const token = signinToken.value.trim();
+        if (!token) {
+          signinError.textContent = 'Enter the admin token.';
+          return;
+        }
+        signinSubmit.disabled = true;
+        try {
+          const response = await fetch('/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token }),
+          });
+          if (!response.ok) {
+            showSignin('That token was not recognised.');
+            return;
+          }
+          showApp();
+        } catch (error) {
+          signinError.textContent = 'Could not reach the server.';
+        } finally {
+          signinSubmit.disabled = false;
+        }
+      }
+
+      async function signOut() {
+        try {
+          await fetch('/admin/logout', { method: 'POST' });
+        } catch (error) {
+          // Clearing the cookie server-side failed, so the session may well
+          // still be live. Say so rather than showing a signed-out page.
+          signinError.textContent = '';
+          setError('Could not reach the server to sign out.');
+          return;
+        }
+        showSignin('');
+      }
 
       function setStatus(message) {
         statusNode.textContent = message;
@@ -210,6 +290,7 @@ export const ADMIN_HTML = `<!doctype html>
               'This feature is optional — see docs/office365-mail-setup.md to enable it.';
             return;
           }
+          if (handleUnauthorized(response)) return;
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data.error || 'Failed to load correspondence');
@@ -317,6 +398,7 @@ export const ADMIN_HTML = `<!doctype html>
               headers: authHeaders(),
               body: JSON.stringify({ entryKey: keyInput.value, entryValue: valueArea.value }),
             });
+            if (handleUnauthorized(updateResponse)) return;
             const updateData = await updateResponse.json();
             if (!updateResponse.ok) {
               throw new Error(updateData.error || 'Failed to update entry');
@@ -333,6 +415,7 @@ export const ADMIN_HTML = `<!doctype html>
               method: 'DELETE',
               headers: authHeaders(),
             });
+            if (handleUnauthorized(deleteResponse)) return;
             const deleteData = await deleteResponse.json();
             if (!deleteResponse.ok) {
               throw new Error(deleteData.error || 'Failed to delete entry');
@@ -359,6 +442,7 @@ export const ADMIN_HTML = `<!doctype html>
         const response = await fetch('/api/entries?subscriptionId=' + encodeURIComponent(subscriptionId), {
           headers: authHeaders(),
         });
+        if (handleUnauthorized(response)) return;
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.error || 'Failed to load notes');
@@ -385,6 +469,7 @@ export const ADMIN_HTML = `<!doctype html>
           const response = await fetch('/api/stripe/lookup?q=' + encodeURIComponent(q), {
             headers: authHeaders(),
           });
+          if (handleUnauthorized(response)) return;
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data.error || 'Search failed');
@@ -447,6 +532,7 @@ export const ADMIN_HTML = `<!doctype html>
             headers: authHeaders(),
             body: JSON.stringify(payload),
           });
+          if (handleUnauthorized(response)) return;
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data.error || 'Failed to create note');
@@ -458,6 +544,24 @@ export const ADMIN_HTML = `<!doctype html>
           setError(error.message);
         }
       });
+
+      signinSubmit.addEventListener('click', signIn);
+      signinToken.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') signIn();
+      });
+      signoutButton.addEventListener('click', signOut);
+
+      // Which panel to show is the server's answer, not a guess from anything
+      // this page can see: the cookie is HttpOnly, so asking is the only way.
+      fetch('/api/session')
+        .then((response) => {
+          if (response.ok) {
+            showApp();
+          } else {
+            showSignin('');
+          }
+        })
+        .catch(() => showSignin('Could not reach the server.'));
     </script>
   </body>
 </html>`;
@@ -594,17 +698,108 @@ function timingSafeEqual(a: string, b: string): boolean {
  * The scheme and presence checks stay ordinary comparisons: neither is secret,
  * and both have to be true before there is anything worth timing.
  */
-function isAuthorized(request: Request, env: Env): boolean {
-  const authHeader = request.headers.get('authorization') || '';
-  const [scheme, token] = authHeader.split(' ');
-  const normalizedScheme = (scheme || '').toLowerCase();
-  if (normalizedScheme !== 'token' || !token || !env.ADMIN_API_TOKEN) return false;
-  return timingSafeEqual(token, env.ADMIN_API_TOKEN);
+/**
+ * The cookie `/admin` signs in with.
+ *
+ * It carries the same secret the `Authorization` header does, so it is exactly
+ * as powerful and no more. What it buys is that the page no longer holds the
+ * token: `HttpOnly` puts it out of reach of every script on the origin, where
+ * before it sat in an input the operator retyped on each load, readable by
+ * anything that ran on the page.
+ */
+const SESSION_COOKIE = 'radiatus_admin';
+
+/** Twelve hours. Long enough for a shift, short enough that a borrowed laptop stops working. */
+const SESSION_MAX_AGE = 12 * 60 * 60;
+
+/**
+ * Reads one cookie without a parser: split on ';', match the name in full.
+ *
+ * The value is decoded, because `setSessionCookie` encoded it. That is safe
+ * here even though the result is compared against a secret: producing a
+ * different encoding of the same token requires already knowing the token.
+ */
+function readCookie(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    if (trimmed.slice(0, eq) !== name) continue;
+    try {
+      return decodeURIComponent(trimmed.slice(eq + 1));
+    } catch {
+      // A malformed value is not a session.
+      return null;
+    }
+  }
+  return null;
 }
 
-async function readJson(request: Request): Promise<EntryPayloadInput | null> {
+/**
+ * How a request presented the token, or null if it presented none.
+ *
+ * Two transports, one credential: the header is what `/api/*` has always
+ * documented and is what curl and CI use, the cookie is what the browser sends
+ * after signing in. Which one arrived matters only to the CSRF check below.
+ */
+type PresentedToken = { token: string; viaCookie: boolean };
+
+function presentedToken(request: Request): PresentedToken | null {
+  const authHeader = request.headers.get('authorization') || '';
+  const [scheme, token] = authHeader.split(' ');
+  if ((scheme || '').toLowerCase() === 'token' && token) {
+    return { token, viaCookie: false };
+  }
+  const cookie = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
+  if (cookie) return { token: cookie, viaCookie: true };
+  return null;
+}
+
+type Authorization = { ok: false } | { ok: true; viaCookie: boolean };
+
+function authorize(request: Request, env: Env): Authorization {
+  const presented = presentedToken(request);
+  if (presented === null || !env.ADMIN_API_TOKEN) return { ok: false };
+  if (!timingSafeEqual(presented.token, env.ADMIN_API_TOKEN)) return { ok: false };
+  return { ok: true, viaCookie: presented.viaCookie };
+}
+
+/**
+ * Refuse a cookie-authenticated write that did not come from this page.
+ *
+ * The header transport cannot be forged cross-site, because no other origin can
+ * set an `Authorization` header on a request the browser sends for you. A
+ * cookie can: the browser attaches it to any request for this host, whoever
+ * caused it. So the moment signing in became possible, `/api/*` acquired a CSRF
+ * surface it did not have before, and this is what closes it.
+ *
+ * The origin must be *this* origin, and an absent `Origin` is refused rather
+ * than waved through: every browser sends it on a cross-origin-capable request,
+ * and a caller that sends none is not this page. Requests that authenticated by
+ * header skip the check, which is what keeps curl and CI working.
+ */
+function requireSameOrigin(request: Request): Response | null {
+  if (request.headers.get('Origin') !== new URL(request.url).origin) {
+    return json({ error: 'Forbidden' }, 403);
+  }
+  return null;
+}
+
+function sessionCookie(request: Request, value: string, maxAge: number): string {
+  // `Secure` only over https, because `wrangler dev` serves plain http on
+  // localhost and a Secure cookie would simply never be stored there. Omitting
+  // it on http is matching the transport, not relaxing the rule.
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return (
+    `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; ` +
+    `SameSite=Strict; Max-Age=${maxAge}${secure}`
+  );
+}
+
+async function readJson<T = EntryPayloadInput>(request: Request): Promise<T | null> {
   try {
-    return await request.json<EntryPayloadInput>();
+    return await request.json<T>();
   } catch {
     return null;
   }
@@ -675,12 +870,52 @@ export default {
       });
     }
 
+    // Sign in: the one route that takes the token in a body rather than a
+    // header, and the only one that hands back a cookie. Before the auth gate,
+    // because a caller with no session is exactly who needs it.
+    if (url.pathname === '/admin/login' && request.method === 'POST') {
+      const crossSite = requireSameOrigin(request);
+      if (crossSite !== null) return crossSite;
+      const payload = await readJson<{ token?: unknown }>(request);
+      const token = String(payload?.token || '');
+      if (!token || !env.ADMIN_API_TOKEN || !timingSafeEqual(token, env.ADMIN_API_TOKEN)) {
+        // Same wording as every other refusal: which half was wrong is useful
+        // to someone guessing and useless to the operator.
+        return json({ error: 'Unauthorized' }, 401);
+      }
+      return json({ ok: true }, 200, {
+        'set-cookie': sessionCookie(request, token, SESSION_MAX_AGE),
+      });
+    }
+
+    // Signing out is a write, so it takes the same cross-site check. Max-Age=0
+    // expires the cookie; the value is emptied too so a browser that ignores
+    // the expiry still holds nothing worth replaying.
+    if (url.pathname === '/admin/logout' && request.method === 'POST') {
+      const crossSite = requireSameOrigin(request);
+      if (crossSite !== null) return crossSite;
+      return json({ ok: true }, 200, { 'set-cookie': sessionCookie(request, '', 0) });
+    }
+
     if (!url.pathname.startsWith('/api/')) {
       return json({ error: 'Not found' }, 404);
     }
 
-    if (!isAuthorized(request, env)) {
-      return json({ error: 'Unauthorized. Send Authorization: Token <token>' }, 401);
+    const auth = authorize(request, env);
+    if (!auth.ok) {
+      return json({ error: 'Unauthorized. Sign in at /admin, or send Authorization: Token <token>' }, 401);
+    }
+
+    // Only the cookie needs this: see `requireSameOrigin`.
+    if (auth.viaCookie && request.method !== 'GET' && request.method !== 'HEAD') {
+      const crossSite = requireSameOrigin(request);
+      if (crossSite !== null) return crossSite;
+    }
+
+    // What the page calls on load to decide whether to show the sign-in panel
+    // or the dashboard. Reaching here at all means the answer is yes.
+    if (url.pathname === '/api/session' && request.method === 'GET') {
+      return json({ authenticated: true });
     }
 
     if (url.pathname === '/api/stripe/lookup' && request.method === 'GET') {

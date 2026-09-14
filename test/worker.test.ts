@@ -485,9 +485,160 @@ test('the admin page and the root are served noindex and nosniff', async () => {
   assert.equal(root.headers.get('x-content-type-options'), 'nosniff');
 });
 
+/**
+ * Signing in exchanges the admin token for a cookie so the operator stops
+ * retyping it. The cookie carries the same secret, so what follows pins the
+ * two properties that make that trade worth making: the page cannot read it
+ * back, and it cannot be used by a page on another origin.
+ */
+const ORIGIN = 'https://worker.example';
+const ENV = { DB, ADMIN_API_TOKEN: 'secret' };
+
+function loginRequest(token: string, origin: string | null = ORIGIN): Request {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (origin !== null) headers.Origin = origin;
+  return new Request(ORIGIN + '/admin/login', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ token }),
+  });
+}
+
+test('/admin/login exchanges a correct token for an HttpOnly session cookie', async () => {
+  const response = await worker.fetch(loginRequest('secret'), ENV);
+  assert.equal(response.status, 200);
+
+  const cookie = response.headers.get('set-cookie') ?? '';
+  assert.match(cookie, /^radiatus_admin=secret;/);
+  // The three attributes that do the work: out of reach of script, not sent
+  // cross-site, and not sent in the clear.
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /SameSite=Strict/);
+  assert.match(cookie, /Secure/);
+});
+
+test('/admin/login refuses a wrong token and sets no cookie', async () => {
+  const response = await worker.fetch(loginRequest('secrets'), ENV);
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get('set-cookie'), null);
+});
+
+test('/admin/login refuses a cross-site sign-in attempt', async () => {
+  const response = await worker.fetch(loginRequest('secret', 'https://evil.example'), ENV);
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get('set-cookie'), null);
+});
+
+test('the session cookie omits Secure over plain http so local dev works', async () => {
+  const request = new Request('http://127.0.0.1:8787/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:8787' },
+    body: JSON.stringify({ token: 'secret' }),
+  });
+  const response = await worker.fetch(request, ENV);
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get('set-cookie') ?? '';
+  assert.match(cookie, /HttpOnly/);
+  assert.doesNotMatch(cookie, /Secure/);
+});
+
+test('/api/session answers 200 with a session cookie and 401 without one', async () => {
+  const signedIn = await worker.fetch(
+    new Request(ORIGIN + '/api/session', { headers: { Cookie: 'radiatus_admin=secret' } }),
+    ENV,
+  );
+  assert.equal(signedIn.status, 200);
+  assert.deepEqual(await signedIn.json(), { authenticated: true });
+
+  const signedOut = await worker.fetch(new Request(ORIGIN + '/api/session'), ENV);
+  assert.equal(signedOut.status, 401);
+});
+
+test('a forged session cookie is rejected', async () => {
+  const response = await worker.fetch(
+    new Request(ORIGIN + '/api/session', { headers: { Cookie: 'radiatus_admin=secrets' } }),
+    ENV,
+  );
+  assert.equal(response.status, 401);
+});
+
+/**
+ * The reason `requireSameOrigin` exists. Before sign-in, `/api/*` could only be
+ * reached with an `Authorization` header, which no other origin can set on a
+ * request the browser sends for you. A cookie the browser attaches by itself
+ * has no such protection, so without this a form on any page the operator has
+ * open could write to their CRM.
+ */
+test('a cookie-authenticated write from another origin is refused', async () => {
+  const response = await worker.fetch(
+    new Request(ORIGIN + '/api/entries', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'radiatus_admin=secret',
+        Origin: 'https://evil.example',
+      },
+      body: JSON.stringify({
+        stripeCustomerId: 'cus_1',
+        stripeSubscriptionId: 'sub_1',
+        entryKey: 'k',
+      }),
+    }),
+    ENV,
+  );
+  // Refused before the body is used, which is why `unusedDb()` never throws.
+  assert.equal(response.status, 403);
+});
+
+test('a cookie-authenticated write from this origin passes the cross-site check', async () => {
+  const response = await worker.fetch(
+    new Request(ORIGIN + '/api/entries', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'radiatus_admin=secret',
+        Origin: ORIGIN,
+      },
+      body: JSON.stringify({}),
+    }),
+    ENV,
+  );
+  // 400 for the empty payload, which is past both the auth and cross-site
+  // gates: a 403 here would mean the check rejected its own page.
+  assert.equal(response.status, 400);
+});
+
+test('a header-authenticated write still works with no Origin, as curl sends none', async () => {
+  const response = await worker.fetch(
+    new Request(ORIGIN + '/api/entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Token secret' },
+      body: JSON.stringify({}),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 400);
+});
+
+test('/admin/logout expires the cookie', async () => {
+  const response = await worker.fetch(
+    new Request(ORIGIN + '/admin/logout', { method: 'POST', headers: { Origin: ORIGIN } }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get('set-cookie') ?? '';
+  assert.match(cookie, /^radiatus_admin=;/);
+  assert.match(cookie, /Max-Age=0/);
+});
+
 test('ADMIN_HTML includes every element id the script depends on', () => {
   for (const id of [
-    'token',
+    'signin',
+    'signin-token',
+    'signin-submit',
+    'signin-error',
+    'signout',
+    'app',
     'search-input',
     'search',
     'status',
