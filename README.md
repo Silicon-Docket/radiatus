@@ -36,6 +36,7 @@ Radiatus is a template, not a hosted service. Click **Deploy to Cloudflare** abo
 - **Notes on top of live data**: attach internal notes/flags to a customer's subscription, layered on top of the real Stripe record instead of replacing it.
 - **Zero servers**: runs entirely on Cloudflare Workers + D1 — nothing to provision, patch, or scale by hand.
 - **Token-gated API**: every `/api/*` route (including the Stripe lookup) requires an `Authorization: Token <token>` secret; nothing is open by default.
+- **Sign in once**: `/admin` exchanges that token for an `HttpOnly` session cookie, so an operator pastes it once rather than on every page load, and no script on the page can read it back.
 - **One-command deploy**: `wrangler deploy` ships the Worker, `wrangler d1 migrations apply` runs migrations.
 
 ## Project structure
@@ -104,14 +105,27 @@ npm run deploy               # ship the Worker
 
 ## API reference
 
-Every `/api/*` route requires:
+Every `/api/*` route requires the admin token, presented one of two ways.
+
+A header, which is what curl, CI and any script should use:
 
 ```
 Authorization: Token <ADMIN_API_TOKEN>
 ```
 
+Or the session cookie `/admin` sets after signing in, which the browser then
+attaches on its own. The two carry the same secret and grant the same access.
+Because a browser attaches a cookie to any request for this host, whoever caused
+it, a cookie-authenticated `POST`, `PUT` or `DELETE` must also carry an `Origin`
+header matching the deployment. Header-authenticated requests are exempt, since
+no other origin can set an `Authorization` header on your behalf, which is why
+curl sending no `Origin` still works.
+
 | Method | Path | Description |
 | --- | --- | --- |
+| `POST` | `/admin/login` | Exchange `{"token":"..."}` for a session cookie. `401` if the token is wrong, `403` if the `Origin` is not this deployment |
+| `POST` | `/admin/logout` | Expire the session cookie |
+| `GET` | `/api/session` | `200` when the caller is authenticated, `401` otherwise. What `/admin` asks on load to decide which panel to show |
 | `GET` | `/api/entries?subscriptionId=sub_123` | List entries, optionally filtered by Stripe subscription ID |
 | `POST` | `/api/entries` | Create an entry |
 | `PUT` | `/api/entries/:id` | Update an entry's key/value |
@@ -166,7 +180,8 @@ field this client depends on, exactly as Basil did.
 ## Security notes
 
 - `ADMIN_API_TOKEN` is a shared secret, not a per-user credential &mdash; anyone holding it has full read/write access to every entry. Set it with `wrangler secret put`, never commit it, and rotate it if it leaks.
-- The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. Put it behind Cloudflare Access or your own auth if it needs to be restricted further. It is served `X-Robots-Tag: noindex, nofollow` so a crawler that finds the URL keeps your admin console out of search results. That keeps it unlisted, not private, and is no substitute for putting real auth in front of it.
+- The `/admin` page ships with the Worker and is reachable by anyone who can reach the deployment; it's the token on `/api/*` that gates writes, not the page itself. The page renders for anyone, then asks for the token and shows nothing until it is accepted. The token is never embedded in the page, which is why signing in is a request rather than something the server fills in. Put it behind Cloudflare Access or your own auth if it needs to be restricted further. It is served `X-Robots-Tag: noindex, nofollow` so a crawler that finds the URL keeps your admin console out of search results. That keeps it unlisted, not private, and is no substitute for putting real auth in front of it.
+- The session cookie is the admin token, so treat it as the same secret. It is `HttpOnly` (no script on the page can read it), `SameSite=Strict` (not sent on requests another site originates), `Secure` over https, and expires after 12 hours. `Secure` is omitted over plain http only so `wrangler dev` works on localhost, where the cookie would otherwise never be stored. Sign out on a shared machine; that expires it server-side rather than just hiding the page.
 - `STRIPE_SECRET_KEY` follows the same handling as `ADMIN_API_TOKEN` &mdash; set via `wrangler secret put` for the deployed Worker and `.dev.vars` for local dev, never committed. Use a restricted, read-only key if your Stripe account supports it; this Worker never writes to Stripe.
 - `GRAPH_CLIENT_SECRET` (only if you enable the Office 365 panel) is handled the same way, and **expires within 24 months** &mdash; when it does, the panel starts returning `502` with nothing else in the deployment affected. Put the expiry in a calendar now; Microsoft will not warn you.
 - Enabling the Office 365 panel means anyone holding `ADMIN_API_TOKEN` can read message metadata &mdash; senders, subjects, timestamps &mdash; from the configured mailbox. Subjects are content: *"Re: refund for order #123"* leaks. Message bodies are excluded by the Exchange grant, but decide deliberately whether one shared token is the right gate for the rest before turning this on. [The setup doc](./docs/office365-mail-setup.md) covers the alternative.
